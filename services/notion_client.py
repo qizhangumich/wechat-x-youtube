@@ -127,7 +127,8 @@ class NotionClient:
                 build_download_*_props() helpers below for download-result writes.
 
         Raises:
-            requests.HTTPError on API failure.
+            requests.HTTPError on API failure. The exception's response body is
+            also logged so callers don't need to inspect it themselves.
         """
         resp = requests.patch(
             f"{NOTION_API_BASE}/pages/{page_id}",
@@ -135,6 +136,12 @@ class NotionClient:
             json={"properties": properties},
             timeout=15,
         )
+        if not resp.ok:
+            # Log Notion's actual error body — invaluable for diagnosing 400s
+            # (e.g. "property X doesn't exist", "select option Y missing", etc.)
+            logger.error(
+                f"[notion] update_page {page_id} → {resp.status_code}: {resp.text[:600]}"
+            )
         resp.raise_for_status()
         return resp.json()
 
