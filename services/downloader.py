@@ -15,6 +15,7 @@ Design notes:
 """
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,12 +26,34 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Optional cookies file — if present, yt-dlp uses it for auth.
-# Bypasses YouTube's "Sign in to confirm you're not a bot" check on data-center IPs.
-# To enable: export cookies from your browser via "Get cookies.txt LOCALLY"
-# extension and place at the host path /root/wechat-x-youtube-data/cookies/
-# (mounted into the container at /data/cookies/).
-COOKIES_FILE = "/data/cookies/youtube_cookies.txt"
+# Source cookies file — read-only golden copy, never written.
+# Mount with `-v /root/wechat-x-youtube-data/cookies:/data/cookies` (no :ro;
+# we need to read it but our code uses a copy so it's never modified).
+COOKIES_SOURCE = "/data/cookies/youtube_cookies.txt"
+
+# Working copy that yt-dlp may freely update during a session. Refreshed from
+# COOKIES_SOURCE before each invocation so the source stays pristine even when
+# YouTube returns a bot-check that would otherwise corrupt the cookie set.
+COOKIES_RUNTIME = "/tmp/yt_dlp_cookies.txt"
+
+
+def _stage_cookies() -> Optional[str]:
+    """
+    Copy the source cookies into a writable runtime path. Returns the
+    runtime path if cookies are available, None otherwise.
+
+    Called once per download. The copy is cheap (a few KB) and ensures
+    that yt-dlp's automatic cookie-jar updates (or YouTube's hostile cookie
+    rewrites on auth failure) don't touch the user-supplied source file.
+    """
+    if not os.path.exists(COOKIES_SOURCE):
+        return None
+    try:
+        shutil.copy2(COOKIES_SOURCE, COOKIES_RUNTIME)
+        return COOKIES_RUNTIME
+    except Exception as exc:
+        logger.warning(f"[downloader] Could not stage cookies: {exc}")
+        return None
 
 
 @dataclass
@@ -106,11 +129,14 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
 
     # Add browser cookies if the user mounted a cookies file.
     # YouTube on data-center IPs (Hetzner, AWS) requires logged-in cookies.
-    if os.path.exists(COOKIES_FILE):
-        cmd.extend(["--cookies", COOKIES_FILE])
-        logger.debug(f"[downloader] Using cookies file: {COOKIES_FILE}")
+    # We pass a fresh-copied runtime path (not the source) so yt-dlp's writes
+    # don't corrupt the golden cookies file when YouTube hostile-rewrites them.
+    cookies_path = _stage_cookies()
+    if cookies_path:
+        cmd.extend(["--cookies", cookies_path])
+        logger.debug(f"[downloader] Using staged cookies: {cookies_path}")
     else:
-        logger.debug(f"[downloader] No cookies file at {COOKIES_FILE} — proceeding without auth")
+        logger.debug(f"[downloader] No cookies file at {COOKIES_SOURCE} — proceeding without auth")
 
     cmd.append(url)
 
