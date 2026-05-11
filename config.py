@@ -114,6 +114,14 @@ class Settings:
     # Override only if you change the cobalt container name or port.
     COBALT_API_URL: str = os.getenv("COBALT_API_URL", "http://cobalt-api:9000/")
 
+    # Residential proxy for downloader outbound traffic.
+    # Set only if YouTube blocks your server's IP — your home/laptop IP works
+    # fine without a proxy.
+    # Format: "http://user:pass@host:port" or "socks5://user:pass@host:port"
+    # When set, yt-dlp passes this via --proxy. Cobalt should also be started
+    # with API_EXTERNAL_PROXY=<same value> (env var on the cobalt container).
+    PROXY_URL: str = os.getenv("PROXY_URL", "")
+
     def validate(self) -> None:
         """
         Raise an error at startup if required variables are missing.

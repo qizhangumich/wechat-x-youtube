@@ -172,6 +172,11 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
     else:
         logger.debug(f"[downloader] No cookies file at {COOKIES_SOURCE} — proceeding without auth")
 
+    # Residential proxy — only if configured. Lets YouTube see a non-datacenter IP.
+    if settings.PROXY_URL:
+        cmd.extend(["--proxy", settings.PROXY_URL])
+        logger.debug(f"[downloader] Using proxy: {settings.PROXY_URL.split('@')[-1]}")
+
     cmd.append(url)
 
     logger.info(f"[downloader] yt-dlp start: {url} (audio_only={audio_only})")
