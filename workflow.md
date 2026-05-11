@@ -20,8 +20,8 @@ For the post-mortem of every wrong turn, see `lessons.md`.
 │  Personal WeChat → 分享 → 企业微信    │         │  Telegram chat with @bot          │
 │           │                         │         │           │                         │
 │           ▼                         │         │           ▼                         │
-│  Tencent SCF (Guangzhou)            │         │  Fly.io (Singapore)                 │
-│  wecom.tianrenyuan.com              │         │  wechat-x-youtube.fly.dev           │
+│  Tencent SCF (Guangzhou)            │         │  Hetzner (Germany)                  │
+│  wecom.tianrenyuan.com              │         │  tg.tianrenyuan.com                 │
 │  /webhook/wecom                     │         │  /webhook/telegram                  │
 └──────────────────┬──────────────────┘         └──────────────────┬──────────────────┘
                    │                                                │
@@ -44,7 +44,9 @@ For the post-mortem of every wrong turn, see `lessons.md`.
                               └────────────────────┘
 ```
 
-Why two ingress hosts? Because **api.telegram.org is unreachable from mainland-China clouds** (GFW). Tencent SCF can talk to WeCom and Notion fine, but cannot reach Telegram. We deploy the same codebase to Fly Singapore for the Telegram path — same Notion database, same pipeline, different door.
+Why two ingress hosts? Because **api.telegram.org is unreachable from mainland-China clouds** (GFW). Tencent SCF can talk to WeCom and Notion fine, but cannot reach Telegram. We deploy the same codebase to a Hetzner Germany VPS for the Telegram path — same Notion database, same pipeline, different door.
+
+(Originally deployed to Fly.io Singapore; migrated to Hetzner to consolidate on a VPS we already run for n8n. See lessons.md A8 for the rationale.)
 
 ---
 
@@ -76,11 +78,11 @@ The bot does NOT reply in the chat after a Phase 1 save. Confirmation lives only
 |---|-------|--------------|---------------|
 | 1 | Your phone or browser | Copy or share a YouTube/X link to the bot | `https://www.youtube.com/watch?v=…` or `https://x.com/user/status/…` |
 | 2 | Telegram client | Sends the message to Telegram's servers | Standard Telegram Bot API protocol |
-| 3 | Telegram backend | POST to the registered webhook | `https://wechat-x-youtube.fly.dev/webhook/telegram` with JSON body |
-| 4 | Fly.io (Singapore) | `routes/telegram.py` checks the sender against `TELEGRAM_ALLOWED_USERS` | If not allowed → reply `⛔ You are not authorised`, return 200 |
-| 5 | Fly | `_get_text_from_update()` extracts text + caption + URL entities | Combined string e.g. `"Look at this https://youtu.be/abc"` |
-| 6 | Fly → shared pipeline | Hands off to `process_message(text)` | (see "Shared pipeline" below) |
-| 7 | Fly | Calls Telegram `sendMessage` API with formatted summary | `✅ Found 1 link(s):` … `Saved: 1 \| Duplicates: 0 \| Errors: 0` |
+| 3 | Telegram backend | POST to the registered webhook | `https://tg.tianrenyuan.com/webhook/telegram` with JSON body |
+| 4 | Hetzner (Germany), behind Caddy | `routes/telegram.py` checks the sender against `TELEGRAM_ALLOWED_USERS` | If not allowed → reply `⛔ You are not authorised`, return 200 |
+| 5 | Hetzner | `_get_text_from_update()` extracts text + caption + URL entities | Combined string e.g. `"Look at this https://youtu.be/abc"` |
+| 6 | Hetzner → shared pipeline | Hands off to `process_message(text)`; if message starts with `/dl`, also schedules a download | (see "Shared pipeline" below) |
+| 7 | Hetzner | Calls Telegram `sendMessage` API with formatted summary | `✅ Found 1 link(s):` … `Saved: 1 \| Duplicates: 0 \| Errors: 0` |
 
 ### What you see on the Telegram side
 
@@ -161,8 +163,9 @@ The pipeline writes these properties on every save. Column names are case- AND s
 | Component | Host | Region | Why there |
 |---|---|---|---|
 | WeCom callback | Tencent SCF | Guangzhou (`ap-guangzhou`) | WeCom requires ICP-filed `.cn`-resolvable domain |
-| Telegram webhook | Fly.io | Singapore (`sin`) | api.telegram.org reachable from outside GFW |
-| Notion API target | api.notion.com | Notion-managed (US) | Reachable from both SCF and Fly |
+| Telegram webhook | Hetzner Cloud (Docker on Ubuntu 24.04) | Falkenstein, Germany | api.telegram.org reachable from outside GFW |
+| Cobalt API (for YouTube) | Hetzner (sibling container on `n8n_default` network) | Same box as above | Different YouTube extraction paths than yt-dlp |
+| Notion API target | api.notion.com | Notion-managed (US) | Reachable from both SCF and Hetzner |
 | `seed_local.py` (one-time) | Your laptop | Wherever you are | WeCom IP whitelist + SCF rotates IPs |
 
 ---
@@ -171,7 +174,10 @@ The pipeline writes these properties on every save. Column names are case- AND s
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Telegram bot doesn't reply at all | Webhook not registered, or Fly app crashed | `curl …/webhook/telegram/info`; `fly logs` |
+| Telegram bot doesn't reply at all | Webhook not registered, or container down | `curl https://tg.tianrenyuan.com/webhook/telegram/info`; `docker logs wechat-x-youtube` |
+| `/dl <youtube>` → "Sign in to confirm" error | YouTube IP-blocked the data-center IP | Routed through cobalt by default (free, 240p). For HD, add residential proxy (see guide.md §15.7) |
+| `/dl` succeeds, file on disk, Notion not updated | Stale page_id from dedup pointing to old DB row that's missing new properties | Check `docker logs` for the Notion 400 body — it names the missing property |
+| `[Errno 36] File name too long` during download | CJK title × pre-fix code | Already fixed via `%(title).80B` byte-count truncation |
 | Telegram bot replies "⛔ You are not authorised" | `TELEGRAM_ALLOWED_USERS` doesn't match sender | `fly secrets list`; verify your ID via `@userinfobot` |
 | Bot replies `Saved: 1` but no Notion row | Integration not invited to the DB (Notion returns 404 on no-permission) | `fly logs` for `[notion] HTTP error 404` |
 | Bot replies `Errors: 1` | Schema drift — DB property name changed, or Source Type select option missing | `fly logs` for full Notion error body |
@@ -180,18 +186,94 @@ The pipeline writes these properties on every save. Column names are case- AND s
 
 ---
 
+## Phase 3 — Media downloader (BUILT)
+
+On top of URL collection, the system can automatically download the actual media files (video / audio) so you have an offline copy. Triggered two ways:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Trigger 1: /dl <url> in Telegram                                │
+│   • Fast path — bot replies "queued" in ~1s                     │
+│   • Download runs in BackgroundTasks after the response         │
+│   • Best for "save and grab now"                                │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+┌──────────────────────────────┴──────────────────────────────────┐
+│ Trigger 2: change "Download Status" to "Requested" in Notion    │
+│   • Slow path — poller checks every 30 s                        │
+│   • Best for "I'm cleaning up my inbox and want some of these"  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+                  ┌──────────────────────────┐
+                  │  services/downloader.py  │
+                  │  routes by source:       │
+                  │                          │
+                  │   YouTube → cobalt API   │
+                  │   anything else → yt-dlp │
+                  └────────────┬─────────────┘
+                               │
+                  ┌────────────┴─────────────┐
+                  │                          │
+                  ▼                          ▼
+         ┌──────────────────┐      ┌──────────────────┐
+         │ Cobalt container │      │ yt-dlp subprocess│
+         │  (sibling)       │      │  (in our app)    │
+         │  Free, 240p      │      │  Full quality    │
+         │  YouTube only    │      │  X/TikTok/etc.   │
+         └────────┬─────────┘      └────────┬─────────┘
+                  │                          │
+                  └──────────────┬───────────┘
+                                 │ file bytes
+                                 ▼
+                  ┌─────────────────────────────┐
+                  │ /data/video-output/         │ (in container)
+                  │ ↕ Docker bind mount         │
+                  │ /root/wechat-x-youtube-data/│
+                  │   video-output/             │ (on host disk)
+                  └──────────────┬──────────────┘
+                                 │
+                                 ▼
+                  ┌─────────────────────────────┐
+                  │ Notion row update:          │
+                  │  • Download Status → Done   │
+                  │  • Local File (path)        │
+                  │  • File Size MB             │
+                  │  • Duration                 │
+                  │  • Downloaded At            │
+                  └─────────────────────────────┘
+```
+
+### Source coverage and quality
+
+| Source | Tool used | Quality (without proxy) | Quality (with proxy) |
+|---|---|---|---|
+| X / Twitter | yt-dlp | Full | Full |
+| TikTok | yt-dlp | Full | Full |
+| Bilibili | yt-dlp | Full | Full |
+| YouTube | cobalt | 240p (legacy format only) | 720p+ |
+| WeChat Channels | — | URL only (no download) | URL only |
+
+### Why YouTube needs special handling
+
+YouTube actively blocks data-center IPs (Hetzner, AWS, etc.) from authenticated video downloads. Cobalt's alternative extraction strategies (mobile-app endpoints, embed APIs) succeed where yt-dlp fails, but YouTube still throttles the output to legacy 240p format from data-center IPs. A residential proxy (~$3/mo) bypasses this entirely.
+
+See `guide.md` §15 for the full setup, cobalt deployment commands, and proxy configuration steps.
+
+---
+
 ## Future phases (currently not built)
 
 ### Phase 2.5 — multi-user routing
 Right now `TELEGRAM_ALLOWED_USERS` is a single allow-list and every save lands in the same Notion DB. To open the bot to others without leaking your DB:
-- Add a per-user `notion_database_id` mapping (small table or Notion DB)
+- Add a per-user `notion_database_id` mapping
 - On each save, look up the sender's DB rather than using the env-var default
 - New users `/start` → bot replies with onboarding link
 
-### Phase 3 — enrichment / AI summary
+### Phase 4 — enrichment / AI summary
 The `Notes` property and `_process_link()` already have hooks for this:
 - After a successful save, enqueue `(notion_page_id, url)` to a worker
-- Worker fetches the URL, runs an LLM summary, calls Notion `update_page()`
-- Could also extract: thumbnail, author, transcript (YouTube), etc.
+- Worker fetches the URL (or transcript via yt-dlp), runs an LLM summary, calls `notion_client.update_page()`
+- Could also extract: thumbnail, author, key timestamps, action items
 
-The pipeline is intentionally synchronous today (simpler, easier to debug). Phase 3 would split save vs enrich into two stages.
+The pipeline is intentionally synchronous today (simpler, easier to debug). Phase 4 would split save vs enrich into two stages — much like the current downloader splits save vs download.

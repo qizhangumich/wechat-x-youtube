@@ -738,25 +738,53 @@ Invoke-RestMethod https://api.ipify.org
 python seed_local.py @all
 ```
 
-**Phase 2 — Fly.io / Telegram quick commands:**
+**Phase 2 — Hetzner / Telegram quick commands (from Windows PowerShell):**
 ```powershell
-# Live tail logs (run in a second window while sending test messages)
-fly logs
+# SSH to the Hetzner box
+ssh root@195.201.31.11
 
-# Check secrets are loaded (shows fingerprints, not values)
-fly secrets list
+# Pull updated code + rebuild + restart (one liner — run on Hetzner)
+# cd /root/wechat-x-youtube && git pull && docker build -t wechat-x-youtube . && \
+#   docker stop wechat-x-youtube && docker rm wechat-x-youtube && \
+#   docker run -d --name wechat-x-youtube --restart=always --network n8n_default \
+#     --env-file /root/wechat-x-youtube/.env \
+#     -v /root/wechat-x-youtube-data/video-output:/data/video-output \
+#     -v /root/wechat-x-youtube-data/cookies:/data/cookies \
+#     wechat-x-youtube
 
-# Update a secret and auto-restart
-fly secrets set TELEGRAM_ALLOWED_USERS="123,456"
+# Tail app logs (on Hetzner)
+# docker logs -f wechat-x-youtube
 
-# Redeploy after code change (~1–2 min)
-fly deploy
+# Re-register webhook (from anywhere with internet — replace TOKEN)
+Invoke-RestMethod "https://tg.tianrenyuan.com/webhook/telegram/set_webhook?public_url=https://tg.tianrenyuan.com"
 
-# Confirm webhook is registered correctly
-Invoke-RestMethod https://wechat-x-youtube.fly.dev/webhook/telegram/info
+# Verify webhook
+Invoke-RestMethod https://tg.tianrenyuan.com/webhook/telegram/info
+```
 
-# Re-register webhook (e.g. after rotating bot token)
-Invoke-RestMethod "https://wechat-x-youtube.fly.dev/webhook/telegram/set_webhook?public_url=https://wechat-x-youtube.fly.dev"
+**Phase 3 — Media downloader quick commands (on Hetzner):**
+```bash
+# Cobalt container management
+docker ps | grep cobalt
+docker logs cobalt-api --tail 20
+docker restart cobalt-api
+
+# List downloaded files (host-side path)
+ls -lh /root/wechat-x-youtube-data/video-output/
+
+# Test cobalt API directly
+docker exec wechat-x-youtube curl -s -X POST http://cobalt-api:9000/ \
+  -H "Accept: application/json" -H "Content-Type: application/json" \
+  -d '{"url":"https://www.youtube.com/watch?v=jNQXAC9IVRw"}'
+
+# Clean up old downloads
+rm /root/wechat-x-youtube-data/video-output/*.mp4
+```
+
+```powershell
+# Pull files from Hetzner to laptop (on Windows PowerShell)
+scp "root@195.201.31.11:/root/wechat-x-youtube-data/video-output/*.mp4" `
+    "D:\personal\ai_projects\56.wechat_collection\video-output\"
 ```
 
 **Key URLs — Phase 1 (WeCom on SCF):**
@@ -769,14 +797,169 @@ Invoke-RestMethod "https://wechat-x-youtube.fly.dev/webhook/telegram/set_webhook
 - **WeCom Admin Backend** (visibility, IP whitelist, address book): https://work.weixin.qq.com/
 - WeCom Developer Center (callback Token/AESKey config only): https://developer.work.weixin.qq.com/
 
-**Key URLs — Phase 2 (Telegram on Fly.io):**
-- App: https://wechat-x-youtube.fly.dev/
-- Health: https://wechat-x-youtube.fly.dev/health
-- Telegram webhook: https://wechat-x-youtube.fly.dev/webhook/telegram
-- Webhook info (what URL Telegram has on file): https://wechat-x-youtube.fly.dev/webhook/telegram/info
-- Bot itself: https://t.me/wechatxyoutube_bot
-- Fly admin: https://fly.io/apps/wechat-x-youtube
+**Key URLs — Phase 2 (Telegram on Hetzner Germany):**
+- App: https://tg.tianrenyuan.com/
+- Health: https://tg.tianrenyuan.com/health
+- Telegram webhook: https://tg.tianrenyuan.com/webhook/telegram
+- Webhook info: https://tg.tianrenyuan.com/webhook/telegram/info
+- Bot: https://t.me/wechatxyoutube_bot
+- Hetzner Cloud console: https://console.hetzner.cloud/
+- Repo: https://github.com/qizhangumich/wechat-x-youtube
 - Find your Telegram numeric user ID: message `@userinfobot` on Telegram
+
+**Key paths — Phase 3 (downloader):**
+- Project on Hetzner: `/root/wechat-x-youtube/` (git clone, code only)
+- Data on Hetzner: `/root/wechat-x-youtube-data/` (downloads, cookies; NOT in git)
+  - Videos: `/root/wechat-x-youtube-data/video-output/`
+  - Cookies: `/root/wechat-x-youtube-data/cookies/youtube_cookies.txt`
+- Container view (in Notion's `Local File` column): `/data/video-output/...`
+- Local download mirror: `D:\personal\ai_projects\56.wechat_collection\video-output\`
 
 **Notion:**
 - Notion integrations: https://www.notion.so/my-integrations
+
+---
+
+## 15. Media downloader (Phase 3)
+
+Beyond collecting URLs, the system can automatically download the actual media (video/audio) for offline access. Built on `yt-dlp` for most sources, with self-hosted `cobalt.tools` routing for YouTube specifically.
+
+### 15.1 — Two ways to trigger a download
+
+| Trigger | Latency | Best for |
+|---|---|---|
+| **`/dl <url>` in Telegram** | ~1 second to start | "Save and grab now" from your phone |
+| **Set `Download Status = Requested` on a Notion row** | up to 30 s (poll interval) | Going through your Notion inbox and picking which to keep |
+
+Both routes call the same downloader → same Notion update → same file destination.
+
+### 15.2 — Telegram commands
+
+| Message | Result |
+|---|---|
+| `https://x.com/.../status/...` (plain URL) | Saves URL only, no download |
+| `/dl https://x.com/.../status/...` | Saves URL + downloads video |
+| `/dl audio https://www.youtube.com/...` | Saves URL + extracts audio-only MP3 |
+| `/dla https://...` | Shorthand for `/dl audio ...` |
+
+### 15.3 — Source routing rules
+
+| Source | Tool | Notes |
+|---|---|---|
+| X / Twitter, TikTok, Bilibili, Vimeo, Reddit, 1500+ sites | `yt-dlp` direct | Works without proxy. 720p video by default |
+| **YouTube** | `cobalt` (separate container) | yt-dlp gets IP-blocked from data-center IPs; cobalt's alternative extraction paths succeed |
+| WeChat Channels | Not downloaded | Closed ecosystem — no public download path. URL is still saved |
+
+### 15.4 — Cobalt container (one-time setup)
+
+Cobalt runs as a sibling Docker container on the same `n8n_default` network:
+
+```bash
+docker run -d \
+  --name cobalt-api \
+  --restart=always \
+  --network n8n_default \
+  -e API_URL="http://cobalt-api:9000/" \
+  -e DURATION_LIMIT=10800 \
+  ghcr.io/imputnet/cobalt:10
+```
+
+Our app reaches it via internal Docker DNS at `http://cobalt-api:9000/` — never exposed publicly. Verify health:
+
+```bash
+docker logs cobalt-api --tail 10        # Should show "cobalt API ^ω^" banner
+```
+
+### 15.5 — Notion schema additions (6 new properties)
+
+Create these on the database manually (case + space sensitive):
+
+| Property | Type | Options |
+|---|---|---|
+| `Download Status` | Select | `Requested`, `Downloading`, `Done`, `Failed` |
+| `Local File` | Text | (container path, see §15.6) |
+| `File Size MB` | Number | — |
+| `Duration` | Text | hh:mm:ss |
+| `Downloaded At` | Date | — |
+| `Download Error` | Text | (populated on failure) |
+
+### 15.6 — File storage: container path ≠ host path
+
+The `Local File` column in Notion shows the **container's** view of the path. To find files on the actual Hetzner disk:
+
+```
+Notion / container view:   /data/video-output/<title>.mp4
+                                  ↕  (Docker -v bind mount)
+Hetzner host / SFTP view:  /root/wechat-x-youtube-data/video-output/<title>.mp4
+```
+
+To retrieve to laptop:
+```powershell
+scp "root@195.201.31.11:/root/wechat-x-youtube-data/video-output/*.mp4" `
+    "D:\personal\ai_projects\56.wechat_collection\video-output\"
+```
+
+Or browse with WinSCP / FileZilla → `root@195.201.31.11` → `/root/wechat-x-youtube-data/video-output/`.
+
+### 15.7 — YouTube quality trade-off (and the proxy option)
+
+| Setup | YouTube quality | Cost |
+|---|---|---|
+| cobalt only (current) | **240p only** (legacy format YouTube serves to data-center IPs) | $0 |
+| cobalt + residential proxy | 720p+ | ~$3/mo |
+
+YouTube refuses to serve modern HD formats from data-center IPs even when login isn't strictly required — they cap whatever does come through to a deliberately low-quality stream as a form of soft anti-scraping.
+
+To unlock HD via a residential proxy:
+
+1. Sign up at https://dataimpulse.com (or Smartproxy / IPRoyal) — pick Residential tier
+2. Get your proxy URL: `http://USER:PASS@gw.dataimpulse.com:823`
+3. Edit `/root/wechat-x-youtube/.env`, add: `PROXY_URL=http://USER:PASS@gw.dataimpulse.com:823`
+4. Recreate cobalt with the proxy env var:
+   ```bash
+   PROXY_URL="http://USER:PASS@gw.dataimpulse.com:823"
+   docker stop cobalt-api && docker rm cobalt-api
+   docker run -d --name cobalt-api --restart=always --network n8n_default \
+     -e API_URL="http://cobalt-api:9000/" \
+     -e API_EXTERNAL_PROXY="$PROXY_URL" \
+     -e DURATION_LIMIT=10800 \
+     ghcr.io/imputnet/cobalt:10
+   ```
+5. Restart our app to pick up `PROXY_URL` for yt-dlp fallbacks:
+   ```bash
+   docker restart wechat-x-youtube
+   ```
+
+X / TikTok / Bilibili etc. don't have YouTube's IP-block problem — they continue working at full quality with or without the proxy.
+
+### 15.8 — Cookies for yt-dlp (optional)
+
+Cobalt handles YouTube without cookies. If you want yt-dlp to attempt YouTube as a backup (or for sites that require login):
+
+1. Install browser extension **"Get cookies.txt LOCALLY"** (Chrome/Firefox)
+2. Visit youtube.com while logged in, export → save as `youtube_cookies.txt`
+3. Upload to Hetzner:
+   ```powershell
+   scp "D:\personal\ai_projects\56.wechat_collection\youtube_cookies.txt" `
+       root@195.201.31.11:/root/wechat-x-youtube-data/cookies/
+   ssh root@195.201.31.11 "chmod 600 /root/wechat-x-youtube-data/cookies/youtube_cookies.txt"
+   ```
+4. Container mount (already in the standard `docker run`):
+   ```
+   -v /root/wechat-x-youtube-data/cookies:/data/cookies
+   ```
+
+Code automatically **stages a copy to `/tmp/yt_dlp_cookies.txt`** inside the container before each call, so yt-dlp can update the working copy without corrupting your source. Source file on host stays pristine.
+
+⚠️ Cookies = account password equivalent. Treat the file like a secret: `chmod 600`, `.gitignore` (already covered by `*_cookies.txt` rule), never commit.
+
+### 15.9 — Common failures
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| YouTube `Sign in to confirm you're not a bot` | yt-dlp IP-blocked | Route through cobalt (default); for HD add proxy (§15.7) |
+| Bot replies `queued` but Notion never updates | Existing row is on an old DB the integration was disconnected from | Re-invite integration to the current DB; or delete the stale row and retry |
+| `[Errno 36] File name too long` | CJK title × non-byte-aware truncation | Already fixed via `.80B` byte-count truncation in template |
+| `Read-only file system: /data/cookies/...` | Cookies mounted with `:ro` | Drop `:ro` from the `-v` mount; code stages to `/tmp/` for safety |
+| `[downloader] yt-dlp not installed` | Stale image after Docker layer cache miss | Force rebuild: `docker build --build-arg YTDLP_REBUILD=$(date +%s) -t wechat-x-youtube .` |
+| Cobalt unreachable from our app | `cobalt-api` container not on `n8n_default` network | `docker network inspect n8n_default` to confirm both containers listed |

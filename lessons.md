@@ -90,6 +90,18 @@ A retrospective of every wrong turn we took building this system, what each one 
 
 ---
 
+### A8. Hetzner self-host replaced Fly.io (infra consolidation)
+
+| | |
+|---|---|
+| **What we tried** | Fly.io Singapore as the home for the Telegram path (outside the GFW, free tier covers it) |
+| **Symptom** | Worked, but introduced a third place for secrets (laptop `.env`, SCF env vars, Fly secrets), a third deployment workflow (`fly deploy`), and ~$1-2/mo recurring after free credit expired |
+| **Root cause** | We already had a Hetzner Germany VPS running n8n + Caddy. Adding a second cloud platform was infrastructure sprawl for no functional gain |
+| **Fix** | Migrated Telegram side to Hetzner. Container shares the existing n8n Caddy reverse proxy and the `n8n_default` Docker network. One less place to remember |
+| **Lesson** | If you already have a Linux VPS with HTTPS + Docker for one project, you don't need a second platform "just for webhooks." Consolidate. The cognitive overhead of multi-cloud is real even at personal scale |
+
+---
+
 ## Category B — Build & deployment
 
 ### B1. PowerShell `Compress-Archive` produces a zip SCF rejects
@@ -161,6 +173,18 @@ A retrospective of every wrong turn we took building this system, what each one 
 | **Root cause** | `fastapi==0.68.0` pairs with `pydantic 1.8.x` and `starlette 0.14.x` — older but rock-solid combo that bundles cleanly on `manylinux2014` |
 | **Fix** | Pinned the matched-set: `fastapi==0.68.0 + uvicorn==0.15.0 + pydantic==1.8.2 + python-dotenv==0.19.0` |
 | **Lesson** | For one-off serverless deployments, pick a **known-good triplet** of (FastAPI, Pydantic, Starlette). Don't try to use the latest of each — the ecosystem cliff between Pydantic 1 and 2 is too sharp |
+
+---
+
+### B8. CJK characters use 3 bytes — Linux filename limit is 255 bytes, not chars
+
+| | |
+|---|---|
+| **What we tried** | yt-dlp output template `%(title).100s` — truncate to 100 characters |
+| **Symptom** | `[Errno 36] File name too long` errors during merge step on Chinese titles, even after .100s truncation |
+| **Root cause** | Linux's filesystem limit is **255 bytes**, not 255 chars. UTF-8 Chinese chars are **3 bytes each**, so 100 chars = ~300 bytes. Add yt-dlp's intermediate suffix like `.fhls-510.mp4.part-Frag494.part` (~35 bytes) and the path overflows |
+| **Fix** | Use `%(title).80B` — yt-dlp supports a byte-count modifier (`B`). 80 bytes ≈ 26 CJK chars or 80 ASCII chars, both safely under the 255-byte limit |
+| **Lesson** | When truncating user-supplied strings for filesystem use, **always count bytes, not characters**. The 4× safety factor your gut applies to char-based limits isn't a safety factor at all for CJK / emoji / any 3-4-byte UTF-8 content |
 
 ---
 
@@ -298,6 +322,19 @@ A retrospective of every wrong turn we took building this system, what each one 
 
 ---
 
+### C12. YouTube hard-blocks data center IPs — cookies don't help
+
+| | |
+|---|---|
+| **What we tried** | yt-dlp on Hetzner with valid logged-in YouTube cookies, all four player clients (tv, android, ios, web), latest yt-dlp version |
+| **Symptom** | Every attempt: `Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.` Same error with or without cookies, with or without auth tokens |
+| **Root cause** | YouTube actively flags data-center IP ranges (Hetzner, AWS, GCP, etc.) regardless of auth. Their bot check correlates IP geo, IP ASN, and cookies; a "real-user cookie set from a data-center IP" reads as suspicious. Cookies *expand* the rejection footprint — yt-dlp's auto-update strips your auth tokens on failure |
+| **Fix (partial, free)** | Self-host **cobalt.tools** as a sibling container. Cobalt uses different extraction paths (mobile-app endpoints) and YouTube *does* serve some content to it — but typically only legacy 240p formats |
+| **Fix (full quality, $3/mo)** | Residential proxy (DataImpulse, Smartproxy, IPRoyal). yt-dlp `--proxy` flag plus cobalt's `API_EXTERNAL_PROXY` env var both route through a real consumer IP |
+| **Lesson** | Site-by-site IP reputation is **asymmetric**: the same Hetzner IP that fails for YouTube works fine for X, TikTok, Bilibili. Don't assume one workaround applies everywhere. For YouTube specifically, "automated download from cloud" is a hard commercial problem they've actively chosen to make difficult |
+
+---
+
 ### C11. The "Set Workspace Tool Page" dialog was a red herring
 
 | | |
@@ -333,6 +370,19 @@ A retrospective of every wrong turn we took building this system, what each one 
 | **Root cause** | SCF reads from console env vars, not from `.env` in the deploy bundle. `.env` is dev-only |
 | **Fix** | Updated `NOTION_DATABASE_ID` in SCF console → 函数配置 → 环境变量. Env-var changes apply immediately, no redeploy needed |
 | **Lesson** | Maintain a checklist: "Where does this value need to be?" — local `.env`, SCF console, WeCom console, Notion DB title… A single value can live in 3+ places |
+
+---
+
+### D4. Container path ≠ host path in user-facing Notion fields
+
+| | |
+|---|---|
+| **What we shipped** | The downloader wrote `link.file_path` (from yt-dlp's stdout) directly to Notion's `Local File` property |
+| **Symptom** | Path in Notion is `/data/video-output/<title>.mp4`, but `ls /data/video-output/` on Hetzner fails — no such directory exists on the host |
+| **Root cause** | yt-dlp runs inside the container where the Docker bind mount maps `/root/wechat-x-youtube-data/video-output/` (host) → `/data/video-output/` (container). The path our app emits is the container's view. The user looks for it via SSH/SFTP and sees nothing |
+| **Fix (documentation)** | Documented the mapping in `guide.md` §15.6 with a 2-row table so future-you knows where to actually look |
+| **Fix (code, not yet applied)** | Substitute the host path when writing to Notion. Or expose a configurable `FILE_PATH_PREFIX_SWAP` env var |
+| **Lesson** | When an app's filesystem view differs from the host's (Docker, virtualization, chroot), any path the app records as a **user-facing identifier** needs translation. Containers are an abstraction leak for anything humans interact with. Logging container paths internally is fine; surfacing them in Notion / Slack / emails isn't |
 
 ---
 
@@ -406,6 +456,31 @@ We hit two flavors of "you need X to do Y, and X requires Y to set up":
 
 ---
 
+### E6. Read-only mounts for "secret" files conflict with tools that rotate them
+
+| | |
+|---|---|
+| **What we tried** | Mounted YouTube cookies file with Docker `:ro` flag to prevent yt-dlp from accidentally corrupting it |
+| **Symptom** | `OSError: [Errno 30] Read-only file system: '/data/cookies/youtube_cookies.txt'` — yt-dlp crashed mid-download |
+| **Root cause** | yt-dlp **updates** the cookies file after each authenticated call (this is normal — Set-Cookie headers from YouTube get persisted back). The `:ro` flag we added defensively prevented this benign rewrite |
+| **Fix (round 1, wrong)** | Dropped `:ro`. yt-dlp then **shredded** the cookies file: when YouTube rejected the auth on a bot-check page, yt-dlp wrote back the leaner cookie set from that response, losing all auth tokens |
+| **Fix (round 2, right)** | Code **copies cookies to `/tmp/yt_dlp_cookies.txt` inside the container** before each yt-dlp call. yt-dlp updates its working copy freely; the host source file stays pristine. Mount can stay `rw` or `ro` (doesn't matter — we don't write to source) |
+| **Lesson** | "Lock it down" instincts can collide with how a tool actually expects to operate. When you decide a file must be read-only, **check first whether the consumer expects to write to it**. Often the cleaner answer is a **copy-on-use** pattern (preserves source, lets consumer scratch as needed), not access restriction |
+
+---
+
+### E7. Stale page_ids from dedup hits outlive the parent database
+
+| | |
+|---|---|
+| **What we tried** | `/dl <url>` dedup'd against an earlier test row (the URL already saved). Code looked up the existing `page_id` and updated it with download results |
+| **Symptom** | Download finished successfully (file on disk), but Notion update failed with `400 Bad Request`. Error logging didn't include Notion's response body so we couldn't see why |
+| **Root cause** | The dedup-matched `page_id` was on an **older Notion database** we'd migrated away from. The new "Download Status" property didn't exist on that DB → property validation 400 |
+| **Fix** | (1) Improved `update_page()` to log Notion's response body on failure (so next 400 is diagnosable in one log line). (2) Documented: when you migrate Notion DBs, the new DB starts dedup-empty, but old saved rows still come back via `find_page_id_by_url` matching |
+| **Lesson** | When you `raise_for_status()` on a 4xx response, **always log the response body too**. Notion's bodies explain exactly which property failed validation. Generic `400 Bad Request` is one of the least useful error strings in computing |
+
+---
+
 ## Category F — What went *right* (worth replicating)
 
 A retro isn't only a list of mistakes. These choices paid off:
@@ -422,7 +497,7 @@ A retro isn't only a list of mistakes. These choices paid off:
 
 ---
 
-## Top 7 takeaways for the next project
+## Top 10 takeaways for the next project
 
 1. **For Chinese platform integrations, ICP filing is a 2–3 week dependency.** Plan it as critical path, not a nice-to-have.
 2. **Bundle dependencies; don't trust runtime pip.** Especially in serverless, especially in regulated regions.
@@ -431,6 +506,9 @@ A retro isn't only a list of mistakes. These choices paid off:
 5. **Implement TODOs that depend on external systems immediately, or guard them with loud failures.** Silent fallbacks become production bugs the moment the assumed mode disappears.
 6. **Identify the bootstrap problem early.** Every two-way integration has a "first message" chicken-and-egg. Plan a one-time path (local script, manual API call) that lives outside the production runtime.
 7. **Don't host IP-whitelisted outbound calls in serverless.** Serverless egress IPs rotate. Inbound callbacks are fine on serverless; whitelisted *outbound* needs a stable-IP runner — your laptop, a fixed VM, or a function bound to a NAT gateway.
+8. **Count bytes, not characters.** Filesystem limits, database column widths, and many protocol fields are byte-bounded. UTF-8 CJK chars are 3 bytes each — a "100-char" string can be 300 bytes. Truncate by bytes when the destination cares about bytes.
+9. **Use copy-on-use for "read-only-ish" files.** When a tool expects to update a file but you want to preserve your golden source, the cleanest pattern is to copy the source to a scratch location at call time. Cleaner than fighting with `:ro` mounts or restoring after the fact.
+10. **Don't surface container paths in user-facing fields.** Container filesystem != host filesystem. Anything humans will look at (Notion props, log dashboards, emails) needs the host-side path. Container paths are an abstraction leak for the human-facing layer.
 
 ---
 
@@ -440,8 +518,15 @@ A retro isn't only a list of mistakes. These choices paid off:
 |---|---|
 | A6 (two consoles) | guide.md §1, §11 troubleshooting |
 | A7 (SCF IP rotation) | `seed_local.py` exists *because* of this |
+| A8 (Hetzner over Fly) | Dockerfile, no fly.toml in production path |
+| B8 (byte truncation) | `services/downloader.py` — `%(title).80B` |
 | C1 (Plain-Text deprecated) | `utils/wecom_crypto.py` |
 | C6 (must seed conversation) | `seed_local.py` + guide.md §8 |
 | C10 (Channels = link card) | `routes/wecom.py::_extract_text_from_xml` MsgType=link branch |
+| C12 (YouTube IP-block) | `services/cobalt_client.py` exists *because* of this |
 | D1 (Notion 404 = no permission) | guide.md §11 troubleshooting |
+| D4 (container vs host paths) | guide.md §15.6 |
 | E5 (bootstrap problem) | `seed_local.py` is the bootstrap-runtime artifact |
+| E6 (cookies copy-on-use) | `services/downloader.py::_stage_cookies` |
+| E7 (log response bodies on 4xx) | `services/notion_client.py::update_page` |
+
