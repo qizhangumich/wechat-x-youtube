@@ -34,10 +34,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# yt-dlp gets a forced upgrade in its own layer so platform-fix updates don't
-# require a full rebuild — `docker build --no-cache=false` will still rebuild
-# from this layer when yt-dlp has a newer release on PyPI.
-RUN pip install --no-cache-dir --upgrade yt-dlp
+# yt-dlp needs FREQUENT updates because YouTube/X/etc. constantly change their
+# anti-scraping. The ARG below busts Docker's layer cache for this RUN whenever
+# you build with --build-arg YTDLP_REBUILD=$(date +%s). Without that flag,
+# Docker will re-use the cached layer (saving time but using stale yt-dlp).
+ARG YTDLP_REBUILD=cache
+RUN pip install --no-cache-dir --upgrade yt-dlp \
+    && yt-dlp --version
 
 # Copy only the application source — .dockerignore excludes everything else
 COPY config.py main.py ./

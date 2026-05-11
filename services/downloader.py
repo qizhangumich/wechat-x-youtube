@@ -86,6 +86,11 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
         "--no-playlist",        # If URL is a playlist, only grab the linked video
         "--no-warnings",
         "--no-progress",
+        # YouTube bot-check workaround: try TV / Android / iOS clients first.
+        # YouTube blocks data-center IPs from the default "web" player but is
+        # more lenient on TV / mobile clients. yt-dlp ignores this arg for
+        # non-YouTube URLs (Twitter, TikTok, Bilibili, etc.).
+        "--extractor-args", "youtube:player_client=tv,android,ios,web",
         # --print emits these AFTER the file is moved to its final location
         "--print", "after_move:filepath",
         "--print", "after_move:%(title)s",
