@@ -52,6 +52,17 @@ async def on_startup() -> None:
         # on the first real request with a confusing traceback.
         sys.exit(1)
 
+    # Phase 3 — start the Notion download poller as a background asyncio task.
+    # Disable with DOWNLOAD_POLLER_ENABLED=false on hosts that shouldn't run it
+    # (e.g. SCF, where yt-dlp wouldn't have stable IP / disk).
+    if settings.DOWNLOAD_POLLER_ENABLED:
+        import asyncio
+        from services.poller import poll_loop
+        asyncio.create_task(poll_loop())
+        logger.info("Notion download poller started")
+    else:
+        logger.info("Notion download poller disabled (DOWNLOAD_POLLER_ENABLED=false)")
+
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:

@@ -85,6 +85,30 @@ class Settings:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
 
+    # ------------------------------------------------------------------
+    # Phase 3 — media downloader (yt-dlp)
+    # ------------------------------------------------------------------
+
+    # Where downloaded media files are saved (inside the container).
+    # On Hetzner, mount a host directory here:
+    #   docker run ... -v /root/video-output:/data/video-output ...
+    VIDEO_OUTPUT_DIR: str = os.getenv("VIDEO_OUTPUT_DIR", "/data/video-output")
+
+    # Default max video resolution for yt-dlp downloads ("720", "1080", "best").
+    # Audio-only mode is triggered per-call (e.g. /dl audio <url>) regardless.
+    DOWNLOAD_MAX_HEIGHT: str = os.getenv("DOWNLOAD_MAX_HEIGHT", "720")
+
+    # Whether to start the Notion Status poller on app startup.
+    # Set to "false" if you want only the Telegram /dl trigger.
+    DOWNLOAD_POLLER_ENABLED: bool = os.getenv("DOWNLOAD_POLLER_ENABLED", "true").lower() == "true"
+
+    # How often the poller checks Notion for rows with Download Status = Requested.
+    POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+
+    # Hard timeout for a single yt-dlp invocation (seconds). Long videos with
+    # slow upstream can take a while; default 10 minutes.
+    DOWNLOAD_TIMEOUT_SECONDS: int = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "600"))
+
     def validate(self) -> None:
         """
         Raise an error at startup if required variables are missing.

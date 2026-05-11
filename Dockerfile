@@ -1,28 +1,43 @@
 # Telegram-side deployment for the wechat-collection app.
 #
-# Why this Dockerfile is separate from the SCF deployment:
-#   SCF in mainland China cannot reach api.telegram.org (GFW blocks it).
-#   We deploy the SAME codebase to Fly.io Singapore so the Telegram path
-#   works. The Fly image uses standard pip install — none of the SCF
-#   bundled-wheel gymnastics (packages/, scf_bootstrap) are needed here.
+# Currently runs on Hetzner (Germany) under Caddy reverse proxy. Originally
+# built for Fly.io Singapore (the GFW blocks api.telegram.org from Tencent
+# SCF) but Hetzner replaced Fly to consolidate on existing infrastructure.
 #
 # Build / run locally:
 #   docker build -t wechat-collection .
-#   docker run --rm -p 8080:8080 --env-file .env wechat-collection
+#   docker run --rm -p 8080:8080 --env-file .env \
+#     -v $(pwd)/video-output:/data/video-output wechat-collection
 #
-# Deploy to Fly:
-#   fly deploy
+# Deploy to Hetzner:
+#   git pull && docker build -t wechat-x-youtube . && docker stop wechat-x-youtube && \
+#   docker rm wechat-x-youtube && docker run -d --name wechat-x-youtube \
+#   --restart=always --network n8n_default --env-file /root/wechat-x-youtube/.env \
+#   -v /root/video-output:/data/video-output wechat-x-youtube
 
 # Python 3.10 specifically — pydantic 1.8.2 (pinned in requirements.txt for SCF
 # compatibility) is broken on 3.11 due to a reserved-keyword check in inspect.
 # SCF also runs 3.10, so this keeps both deployments on the same interpreter.
 FROM python:3.10-slim
 
+# System packages: ffmpeg is required by yt-dlp to merge separate video+audio
+# streams (YouTube's DASH delivery splits them above 360p). curl is handy for
+# in-container debugging.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install Python deps first so Docker can cache this layer
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# yt-dlp gets a forced upgrade in its own layer so platform-fix updates don't
+# require a full rebuild — `docker build --no-cache=false` will still rebuild
+# from this layer when yt-dlp has a newer release on PyPI.
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 # Copy only the application source — .dockerignore excludes everything else
 COPY config.py main.py ./
@@ -31,7 +46,11 @@ COPY services/ ./services/
 COPY models/   ./models/
 COPY utils/    ./utils/
 
-# Fly injects PORT; default to 8080 for local docker runs
+# Where downloaded media files land. Mount a host volume here at runtime
+# (e.g. -v /root/video-output:/data/video-output) so files persist across
+# container restarts and can be retrieved via SFTP from the host path.
+RUN mkdir -p /data/video-output
+
 ENV PORT=8080
 EXPOSE 8080
 

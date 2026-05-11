@@ -43,6 +43,14 @@ PROP_CREATED_AT    = "Created At"
 PROP_DEDUP_KEY     = "Dedup Key"
 PROP_NOTES         = "Notes"
 
+# --- Phase 3 — download properties (created manually in Notion UI) -----------
+PROP_DOWNLOAD_STATUS = "Download Status"  # Select: Requested | Downloading | Done | Failed
+PROP_LOCAL_FILE      = "Local File"        # Text — path on Hetzner filesystem
+PROP_FILE_SIZE_MB    = "File Size MB"      # Number
+PROP_DURATION        = "Duration"          # Text — e.g. "12:34"
+PROP_DOWNLOADED_AT   = "Downloaded At"     # Date
+PROP_DOWNLOAD_ERROR  = "Download Error"    # Text
+
 # Human-readable platform labels
 PLATFORM_LABELS = {
     SourceType.YOUTUBE:                 "YouTube",
@@ -105,10 +113,100 @@ class NotionClient:
         normalized = normalize_url(url)
         return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
+    # ------------------------------------------------------------------
+    # Generic update / query (Phase 3 enrichment + downloader)
+    # ------------------------------------------------------------------
+
+    def update_page(self, page_id: str, properties: dict) -> dict:
+        """
+        Patch a Notion page with new property values.
+
+        Args:
+            page_id: Notion page ID (with or without dashes — Notion accepts both).
+            properties: Already-formatted Notion property payloads. Use the
+                build_download_*_props() helpers below for download-result writes.
+
+        Raises:
+            requests.HTTPError on API failure.
+        """
+        resp = requests.patch(
+            f"{NOTION_API_BASE}/pages/{page_id}",
+            headers=self._headers,
+            json={"properties": properties},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def query_pages(self, filter_obj: dict, page_size: int = 100) -> list:
+        """
+        Query the configured database with a Notion filter object.
+        Returns the list of matching page records.
+        """
+        resp = requests.post(
+            f"{NOTION_API_BASE}/databases/{self._db_id}/query",
+            headers=self._headers,
+            json={"filter": filter_obj, "page_size": page_size},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+    # ------------------------------------------------------------------
+    # Download-result property builders (used by downloader caller code)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_download_in_progress_props() -> dict:
+        """Mark a row as actively downloading — prevents the poller picking it up twice."""
+        return {
+            PROP_DOWNLOAD_STATUS: {"select": {"name": "Downloading"}},
+        }
+
+    @staticmethod
+    def build_download_done_props(
+        file_path: str,
+        size_mb: float,
+        duration: Optional[str] = None,
+    ) -> dict:
+        """Notion property payload for a successful download."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        props = {
+            PROP_DOWNLOAD_STATUS: {"select": {"name": "Done"}},
+            PROP_LOCAL_FILE: {"rich_text": _rich_text(file_path)},
+            PROP_FILE_SIZE_MB: {"number": size_mb},
+            PROP_DOWNLOADED_AT: {"date": {"start": now_iso}},
+            # Clear any prior error message
+            PROP_DOWNLOAD_ERROR: {"rich_text": []},
+        }
+        if duration:
+            props[PROP_DURATION] = {"rich_text": _rich_text(duration)}
+        return props
+
+    @staticmethod
+    def build_download_failed_props(error: str) -> dict:
+        """Notion property payload for a failed download — store error for debugging."""
+        return {
+            PROP_DOWNLOAD_STATUS: {"select": {"name": "Failed"}},
+            PROP_DOWNLOAD_ERROR: {"rich_text": _rich_text(error[:1900])},
+        }
+
+    # ------------------------------------------------------------------
+    # Dedup helpers
+    # ------------------------------------------------------------------
+
     def is_duplicate(self, url: str) -> bool:
         """
         Return True if a page with the same dedup_key already exists in Notion.
         Returns False on API error to allow the save attempt to proceed.
+        """
+        return self.find_page_id_by_url(url) is not None
+
+    def find_page_id_by_url(self, url: str) -> Optional[str]:
+        """
+        Look up an existing Notion page by URL (via dedup key). Returns the
+        page ID if found, None otherwise. Used by /dl on already-saved URLs
+        so the download result can still be written back to the existing row.
         """
         dedup_key = self.build_dedup_key(url)
         endpoint = f"{NOTION_API_BASE}/databases/{self._db_id}/query"
@@ -117,15 +215,16 @@ class NotionClient:
                 "property": PROP_DEDUP_KEY,
                 "rich_text": {"equals": dedup_key},
             },
-            "page_size": 1,  # we only need to know if ≥1 exists
+            "page_size": 1,
         }
         try:
             resp = requests.post(endpoint, headers=self._headers, json=payload, timeout=10)
             resp.raise_for_status()
-            return len(resp.json().get("results", [])) > 0
+            results = resp.json().get("results", [])
+            return results[0]["id"] if results else None
         except requests.RequestException as exc:
             logger.error(f"Notion dedup check failed for '{url}': {exc}")
-            return False  # fail open — attempt to save
+            return None  # fail open — caller can attempt to save
 
     # ------------------------------------------------------------------
     # Page creation

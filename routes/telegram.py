@@ -19,12 +19,16 @@ Workflow:
   → Reply to the user with a summary
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional, Tuple
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from config import settings
 from models.schemas import ProcessResult
+from services.downloader import download_url
 from services.message_service import process_message
+from services.notion_client import NotionClient, get_notion_client
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -131,8 +135,70 @@ def _build_reply(result: ProcessResult) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+def _parse_dl_command(text: str) -> Optional[Tuple[str, bool]]:
+    """
+    Parse a `/dl` or `/dla` command. Returns (url, audio_only) or None if not a command.
+
+    Accepted forms:
+        /dl https://...               → (url, audio_only=False)
+        /dl audio https://...         → (url, audio_only=True)
+        /dla https://...              → (url, audio_only=True)   shorthand
+        /dl@botname https://...       → also supported (group chat addressing)
+    """
+    stripped = text.strip()
+    parts = stripped.split(maxsplit=2)
+    if not parts:
+        return None
+
+    cmd = parts[0].lower()
+    # Strip group-chat @bot suffix: /dl@wechatxyoutube_bot → /dl
+    if "@" in cmd:
+        cmd = cmd.split("@", 1)[0]
+
+    if cmd == "/dl":
+        if len(parts) >= 3 and parts[1].lower() == "audio":
+            return parts[2].strip(), True
+        if len(parts) >= 2:
+            return parts[1].strip(), False
+        return None  # /dl with no URL — fall through to no-action
+    if cmd == "/dla" and len(parts) >= 2:
+        return parts[1].strip(), True
+    return None
+
+
+def _download_in_background(url: str, page_id: Optional[str], audio_only: bool) -> None:
+    """
+    Run yt-dlp and write the result back to Notion.
+    Called via FastAPI BackgroundTasks — runs after the HTTP response is sent.
+    Synchronous on purpose; BackgroundTasks executes in a thread pool.
+    """
+    notion = get_notion_client()
+    result = download_url(url, audio_only=audio_only)
+
+    if not page_id:
+        # The URL wasn't saveable (parser found nothing) — just log
+        logger.info(f"[telegram /dl] Download finished for {url} — no Notion page to update")
+        return
+
+    try:
+        if result.success:
+            notion.update_page(page_id, NotionClient.build_download_done_props(
+                file_path=result.file_path,
+                size_mb=result.file_size_mb or 0.0,
+                duration=result.duration,
+            ))
+            logger.info(f"[telegram /dl] Saved {url} → {result.file_path}")
+        else:
+            notion.update_page(page_id, NotionClient.build_download_failed_props(
+                result.error or "Unknown error"
+            ))
+            logger.error(f"[telegram /dl] Download failed for {url}: {result.error}")
+    except Exception as exc:
+        logger.error(f"[telegram /dl] Notion update failed for {page_id}: {exc}")
+
+
 @router.post("")
-async def telegram_webhook(request: Request) -> JSONResponse:
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """
     Receive Telegram update and process any links in the message.
     Telegram expects HTTP 200 regardless of outcome.
@@ -165,7 +231,53 @@ async def telegram_webhook(request: Request) -> JSONResponse:
 
     logger.info(f"Telegram message from chat {chat_id}: {text[:120]}")
 
-    # Run the pipeline (same as WeCom test endpoint)
+    # --- /dl command path -----------------------------------------------
+    # /dl <url> or /dl audio <url> → save to Notion AND schedule download
+    parsed = _parse_dl_command(text)
+    if parsed is not None:
+        url, audio_only = parsed
+
+        # Save first via the normal pipeline so dedup + Notion row creation happens
+        try:
+            result = process_message(url, captured_from="Telegram")
+        except Exception as exc:
+            logger.error(f"[telegram /dl] Pipeline error: {exc}", exc_info=True)
+            if chat_id:
+                await _send_telegram_reply(chat_id, "❌ Could not save link. See server logs.")
+            return JSONResponse({"ok": True})
+
+        if result.links_found == 0:
+            if chat_id:
+                await _send_telegram_reply(chat_id, "⚠️ No URL found after `/dl`.")
+            return JSONResponse({"ok": True})
+
+        # Find a page_id to attach the download result to.
+        # For new saves it's on the LinkSaveResult; for duplicates we look it up.
+        page_id: Optional[str] = None
+        for r in result.results:
+            if r.notion_page_id:
+                page_id = r.notion_page_id
+                break
+
+        if not page_id:
+            # Likely a duplicate URL — look up the existing row so we can
+            # still update its Download Status / Local File.
+            page_id = get_notion_client().find_page_id_by_url(url)
+
+        # Schedule the actual download — runs after this response goes out
+        background_tasks.add_task(_download_in_background, url, page_id, audio_only)
+
+        mode = "🎵 audio" if audio_only else "🎬 video (≤720p)"
+        link_status = "🔁 already saved" if result.links_saved == 0 else "💾 saved"
+        if chat_id:
+            await _send_telegram_reply(
+                chat_id,
+                f"📥 {mode} download queued.\n{link_status} to Notion. "
+                f"File will appear in the row's Local File field when ready (~30s–10min).",
+            )
+        return JSONResponse({"ok": True})
+
+    # --- Default path: just save link(s) to Notion (no download) -------
     try:
         result = process_message(text, captured_from="Telegram")
         if chat_id:
