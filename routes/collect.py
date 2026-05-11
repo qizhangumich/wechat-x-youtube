@@ -74,5 +74,5 @@ async def collect(
 
     # --- Process --------------------------------------------------------------
     logger.info(f"collect: received text ({len(payload.text)} chars): {payload.text[:120]}")
-    result = process_message(payload.text)
+    result = process_message(payload.text, captured_from="iOS Shortcut")
     return result

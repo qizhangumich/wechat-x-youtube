@@ -167,7 +167,7 @@ async def telegram_webhook(request: Request) -> JSONResponse:
 
     # Run the pipeline (same as WeCom test endpoint)
     try:
-        result = process_message(text)
+        result = process_message(text, captured_from="Telegram")
         if chat_id:
             await _send_telegram_reply(chat_id, _build_reply(result))
     except Exception as exc:

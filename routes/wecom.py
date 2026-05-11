@@ -186,7 +186,7 @@ async def wecom_callback(
 
     # --- Run the processing pipeline -----------------------------------------
     try:
-        result: ProcessResult = process_message(content)
+        result: ProcessResult = process_message(content, captured_from="WeCom")
         logger.info(f"Pipeline result: {result.message}")
     except Exception as exc:
         # Never return an error to WeCom — it will retry endlessly.
@@ -322,7 +322,7 @@ async def wecom_test(payload: TestMessageRequest) -> ProcessResult:
     access in production (e.g. with an API key middleware or by disabling it).
     """
     logger.info(f"[test] Processing text: {payload.text[:120]}{'...' if len(payload.text) > 120 else ''}")
-    result = process_message(payload.text)
+    result = process_message(payload.text, captured_from="Test Endpoint")
     return result
 
 

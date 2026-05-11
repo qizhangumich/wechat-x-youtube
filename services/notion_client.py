@@ -131,7 +131,12 @@ class NotionClient:
     # Page creation
     # ------------------------------------------------------------------
 
-    def _build_page_payload(self, link: ExtractedLink, raw_message: str) -> dict:
+    def _build_page_payload(
+        self,
+        link: ExtractedLink,
+        raw_message: str,
+        captured_from: str = "WeCom",
+    ) -> dict:
         """Construct the full Notion page creation payload."""
         dedup_key = self.build_dedup_key(link.url)
         platform_label = PLATFORM_LABELS.get(link.source_type, "Other")
@@ -155,7 +160,9 @@ class NotionClient:
                     "rich_text": _rich_text(platform_label),
                 },
                 PROP_CAPTURED_FROM: {
-                    "select": {"name": "WeCom"},
+                    # Which ingress channel saved this link — set per-route by
+                    # the caller (WeCom on SCF, Telegram on Hetzner, etc.)
+                    "select": {"name": captured_from},
                 },
                 PROP_RAW_MESSAGE: {
                     "rich_text": _rich_text(raw_message),
@@ -175,12 +182,17 @@ class NotionClient:
             },
         }
 
-    def create_page(self, link: ExtractedLink, raw_message: str) -> dict:
+    def create_page(
+        self,
+        link: ExtractedLink,
+        raw_message: str,
+        captured_from: str = "WeCom",
+    ) -> dict:
         """
         Create a new page in the Notion database.
         Raises requests.HTTPError on failure.
         """
-        payload = self._build_page_payload(link, raw_message)
+        payload = self._build_page_payload(link, raw_message, captured_from)
         resp = requests.post(
             f"{NOTION_API_BASE}/pages",
             headers=self._headers,
@@ -194,9 +206,21 @@ class NotionClient:
     # Public save interface
     # ------------------------------------------------------------------
 
-    def save_link(self, link: ExtractedLink, raw_message: str) -> LinkSaveResult:
+    def save_link(
+        self,
+        link: ExtractedLink,
+        raw_message: str,
+        captured_from: str = "WeCom",
+    ) -> LinkSaveResult:
         """
         Save a single link to Notion with dedup protection.
+
+        Args:
+            link: The extracted link to save.
+            raw_message: Original message text (saved to "Raw Message" prop).
+            captured_from: Ingress-channel label written to "Captured From"
+                Notion select property. Pass "Telegram", "WeCom", "iOS Shortcut",
+                etc. depending on which route is calling.
 
         Returns a LinkSaveResult describing what happened:
           - status="saved"      → new page created
@@ -212,7 +236,7 @@ class NotionClient:
                     status="duplicate",
                 )
 
-            page = self.create_page(link, raw_message)
+            page = self.create_page(link, raw_message, captured_from)
             page_id = page.get("id", "")
             logger.info(f"[notion] Saved: {link.url} (page_id={page_id})")
             return LinkSaveResult(

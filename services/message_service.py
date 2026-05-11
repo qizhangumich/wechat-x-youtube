@@ -28,12 +28,17 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def process_message(text: str) -> ProcessResult:
+def process_message(text: str, captured_from: str = "WeCom") -> ProcessResult:
     """
     Full pipeline: text → extracted links → Notion pages.
 
     Args:
         text: Raw message content (may contain zero or more URLs).
+        captured_from: Ingress channel label written to Notion's "Captured From"
+            property for every link saved by this call. Each route should pass
+            its own label: "WeCom" from routes/wecom.py, "Telegram" from
+            routes/telegram.py, "iOS Shortcut" from routes/collect.py, etc.
+            Defaults to "WeCom" for backwards compatibility.
 
     Returns:
         ProcessResult with counts and per-link save results.
@@ -51,14 +56,14 @@ def process_message(text: str) -> ProcessResult:
             message="No links found in message.",
         )
 
-    logger.info(f"Found {len(links)} link(s) — writing to Notion...")
+    logger.info(f"Found {len(links)} link(s) — writing to Notion (from={captured_from})...")
 
     # --- Step 2: Save each link to Notion -------------------------------------
     notion = get_notion_client()
     results: List[LinkSaveResult] = []
 
     for link in links:
-        result = _process_link(notion, link, raw_message=text)
+        result = _process_link(notion, link, raw_message=text, captured_from=captured_from)
         results.append(result)
 
     # --- Step 3: Aggregate counts --------------------------------------------
@@ -77,14 +82,19 @@ def process_message(text: str) -> ProcessResult:
     )
 
 
-def _process_link(notion, link: ExtractedLink, raw_message: str) -> LinkSaveResult:
+def _process_link(
+    notion,
+    link: ExtractedLink,
+    raw_message: str,
+    captured_from: str = "WeCom",
+) -> LinkSaveResult:
     """
     Save a single link and return its result.
 
     Separated from process_message() so Step 2 can easily add enrichment
     logic here (e.g. schedule a background task after a successful save).
     """
-    result = notion.save_link(link, raw_message)
+    result = notion.save_link(link, raw_message, captured_from)
 
     # --- Extension point: Step 2 enrichment hook ----------------------------
     # if result.status == "saved":
