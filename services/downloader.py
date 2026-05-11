@@ -106,8 +106,12 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
         return DownloadResult(success=False, error=f"Cannot create output dir: {exc}")
 
     # Output template — keep readable for SFTP browsing, include video ID for uniqueness.
-    # %(title).100s truncates the title to 100 chars; [%(id)s] makes it dedup-safe.
-    output_template = str(output_dir / "%(title).100s [%(id)s].%(ext)s")
+    # IMPORTANT: use .80B (BYTES) not .100s (chars) — Linux filename limit is 255 bytes,
+    # and Chinese/Japanese/Korean titles use 3 bytes per char. A 100-char Chinese title
+    # would be ~300 bytes and overflow when yt-dlp adds intermediate suffixes like
+    # ".fhls-510.mp4.part-Frag494.part" (35 extra bytes).
+    # 80 bytes ≈ 26 CJK chars or 80 ASCII chars — readable AND safely under limit.
+    output_template = str(output_dir / "%(title).80B [%(id)s].%(ext)s")
 
     cmd = [
         "yt-dlp",
