@@ -54,5 +54,7 @@ RUN mkdir -p /data/video-output
 ENV PORT=8080
 EXPOSE 8080
 
-# Run uvicorn directly. main.py's __main__ block isn't used here.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+# Hardcoded --port 8080 (NOT ${PORT}) because shell substitution from --env-file
+# was unreliable: a stray empty PORT= line in .env caused uvicorn to fall back
+# to its 8000 default, which Caddy couldn't reach. Always 8080 here, period.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
