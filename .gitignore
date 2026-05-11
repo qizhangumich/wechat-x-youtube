@@ -18,6 +18,15 @@ deploy.zip
 # SCF Linux-specific bundled wheels (re-installed per-environment)
 packages/
 
+# Phase 3 — downloaded media files (potentially hundreds of MB each)
+# scp'd from Hetzner to local; must NEVER be committed
+video-output/
+*.mp4
+*.mp3
+*.webm
+*.mkv
+*.m4a
+
 # Python build/cache
 __pycache__/
 *.py[cod]
