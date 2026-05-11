@@ -1,0 +1,3 @@
+#!/bin/bash
+export PYTHONPATH=/var/user/packages:$PYTHONPATH
+/var/lang/python310/bin/python3.10 -m uvicorn main:app --host 0.0.0.0 --port 9000

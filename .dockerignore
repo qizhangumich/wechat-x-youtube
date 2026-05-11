@@ -1,0 +1,47 @@
+# Files that should NOT be baked into the Fly Docker image.
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Local env / secrets
+.env
+.env.example
+.venv
+venv/
+
+# SCF-specific artifacts — Fly uses standard pip install + Docker
+packages/
+deploy.zip
+*.zip
+scf_bootstrap*
+
+# Docs (not needed at runtime)
+guide.md
+lessons.md
+README.md
+
+# Local-only laptop scripts
+seed_local.py
+
+# Build artifacts
+dist/
+build/
+
+# IDE / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Fly's own generated files
+.fly/
+fly.toml.bak

@@ -1,0 +1,114 @@
+"""
+Centralised configuration loaded from environment variables / .env file.
+
+All other modules import `settings` from here — never read os.environ directly
+outside this file. That makes it easy to swap the source (e.g., secrets manager)
+in one place later.
+"""
+
+import logging
+import os
+from functools import lru_cache
+
+from dotenv import load_dotenv
+
+# Load .env file if present (no-op in production where env vars are set directly)
+load_dotenv()
+
+
+class Settings:
+    # ------------------------------------------------------------------
+    # WeCom (Enterprise WeChat) callback configuration
+    # ------------------------------------------------------------------
+
+    # Token: the same string you fill in on the WeCom developer console.
+    # Used to verify that incoming requests really come from WeCom.
+    WECOM_TOKEN: str = os.getenv("WECOM_TOKEN", "")
+
+    # AES key for message encryption/decryption (43 chars, Base64-encoded).
+    # Required only when "encrypted mode" is enabled on WeCom console.
+    WECOM_ENCODING_AES_KEY: str = os.getenv("WECOM_ENCODING_AES_KEY", "")
+
+    # Your WeCom Corp ID (企业ID)
+    WECOM_CORP_ID: str = os.getenv("WECOM_CORP_ID", "")
+
+    # Corp Secret — used to fetch access_token for outbound API calls
+    # (sending messages back to users, etc.)
+    WECOM_CORP_SECRET: str = os.getenv("WECOM_CORP_SECRET", "")
+
+    # Agent ID of the self-built app (visible in admin backend)
+    WECOM_AGENT_ID: str = os.getenv("WECOM_AGENT_ID", "")
+
+    # ------------------------------------------------------------------
+    # Notion API configuration
+    # ------------------------------------------------------------------
+
+    # Notion integration secret — starts with "secret_"
+    NOTION_API_KEY: str = os.getenv("NOTION_API_KEY", "")
+
+    # The ID of the database where links will be stored.
+    # Found in the database URL: notion.so/<workspace>/<DATABASE_ID>?v=...
+    NOTION_DATABASE_ID: str = os.getenv("NOTION_DATABASE_ID", "")
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # iOS Shortcut / collect endpoint API key
+    # ------------------------------------------------------------------
+
+    # Any random string you choose — must match what the iOS Shortcut sends.
+    # Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    COLLECT_API_KEY: str = os.getenv("COLLECT_API_KEY", "")
+
+    # ------------------------------------------------------------------
+    # Telegram Bot configuration (alternative input channel to WeCom)
+    # ------------------------------------------------------------------
+
+    # Bot token from @BotFather on Telegram
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+    # Optional: comma-separated list of allowed Telegram user IDs (numeric).
+    # Leave blank to allow any user — lock it down once the bot is working.
+    # Example: "123456789,987654321"
+    TELEGRAM_ALLOWED_USERS: str = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+
+    # ------------------------------------------------------------------
+    # Application settings
+    # ------------------------------------------------------------------
+
+    # "development" or "production"
+    APP_ENV: str = os.getenv("APP_ENV", "development")
+
+    # Log level: DEBUG, INFO, WARNING, ERROR
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Host / port for local uvicorn (used by the run instructions)
+    HOST: str = os.getenv("HOST", "0.0.0.0")
+    PORT: int = int(os.getenv("PORT", "8000"))
+
+    def validate(self) -> None:
+        """
+        Raise an error at startup if required variables are missing.
+        Call this from main.py on application startup.
+        """
+        missing = []
+        if not self.NOTION_API_KEY:
+            missing.append("NOTION_API_KEY")
+        if not self.NOTION_DATABASE_ID:
+            missing.append("NOTION_DATABASE_ID")
+
+        if missing:
+            raise EnvironmentError(
+                f"Missing required environment variables: {', '.join(missing)}\n"
+                "Copy .env.example to .env and fill in the values."
+            )
+
+
+# Single shared instance — import this everywhere
+settings = Settings()
+
+
+def configure_logging() -> None:
+    """Apply the log level from settings to the root logger."""
+    level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    logging.basicConfig(level=level)
+    logging.getLogger("uvicorn.access").setLevel(level)

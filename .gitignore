@@ -1,0 +1,84 @@
+# ============================================================
+# CRITICAL: never commit secrets
+# ============================================================
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+
+# ============================================================
+# Build artifacts that should never be in git
+# ============================================================
+# SCF deploy bundle (generated each deploy; bulky binary)
+deploy.zip
+*.zip
+
+# SCF Linux-specific bundled wheels (re-installed per-environment)
+packages/
+
+# Python build/cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================================
+# Tooling local state
+# ============================================================
+# Claude Code session state (may contain conversation context)
+.claude/
+
+# Fly.io local state (after migration to Hetzner you can remove this)
+.fly/
+fly.toml.bak
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================================================
+# Logs and temp
+# ============================================================
+*.log
+*.tmp
+*.bak
+
+# ============================================================
+# DO commit these (whitelisted by NOT being above):
+# ============================================================
+#   .env.example         (template for required env vars)
+#   .dockerignore
+#   .gitignore           (this file)
+#   Dockerfile
+#   fly.toml             (no secrets — those are in `fly secrets`)
+#   guide.md, lessons.md, workflow.md, README.md
+#   scf_bootstrap        (SCF runtime launcher)
+#   seed_local.py        (no secrets — reads from .env at runtime)
+#   requirements.txt
+#   All source: main.py, config.py, routes/, services/, models/, utils/
