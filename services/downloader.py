@@ -87,9 +87,24 @@ def _build_format_args(audio_only: bool, max_height: str) -> List[str]:
     ]
 
 
+def _is_youtube_url(url: str) -> bool:
+    """Best-effort hostname check — covers youtube.com, youtu.be, m.youtube.com, music.*"""
+    lower = url.lower()
+    return (
+        "youtube.com/" in lower
+        or "youtu.be/" in lower
+        or lower.startswith("https://youtu.be")
+        or lower.startswith("http://youtu.be")
+    )
+
+
 def download_url(url: str, audio_only: bool = False) -> DownloadResult:
     """
-    Download a single URL via yt-dlp.
+    Download a single URL.
+
+    Routing:
+        YouTube → cobalt API (yt-dlp is IP-blocked on data-center hosts)
+        Anything else → yt-dlp (the well-trodden path)
 
     Args:
         url: The media URL (YouTube, X, TikTok, Bilibili, etc.).
@@ -99,6 +114,21 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
     Returns:
         DownloadResult — never raises; failures are reported via the .error field.
     """
+    # ----- YouTube goes through cobalt ----------------------------------
+    if _is_youtube_url(url):
+        from services.cobalt_client import download_via_cobalt
+        logger.info(f"[downloader] YouTube detected — routing to cobalt: {url}")
+        cobalt = download_via_cobalt(url, audio_only=audio_only)
+        return DownloadResult(
+            success=cobalt.success,
+            file_path=cobalt.file_path,
+            file_size_mb=cobalt.file_size_mb,
+            duration=cobalt.duration,
+            title=cobalt.title,
+            error=cobalt.error,
+        )
+
+    # ----- Everything else: yt-dlp --------------------------------------
     output_dir = Path(settings.VIDEO_OUTPUT_DIR)
     try:
         output_dir.mkdir(parents=True, exist_ok=True)

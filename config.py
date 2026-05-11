@@ -109,6 +109,11 @@ class Settings:
     # slow upstream can take a while; default 10 minutes.
     DOWNLOAD_TIMEOUT_SECONDS: int = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "600"))
 
+    # Cobalt API endpoint — for YouTube downloads that bypass yt-dlp's
+    # data-center-IP block. Cobalt runs as a sibling container on n8n_default.
+    # Override only if you change the cobalt container name or port.
+    COBALT_API_URL: str = os.getenv("COBALT_API_URL", "http://cobalt-api:9000/")
+
     def validate(self) -> None:
         """
         Raise an error at startup if required variables are missing.
