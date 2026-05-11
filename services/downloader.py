@@ -25,6 +25,13 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Optional cookies file — if present, yt-dlp uses it for auth.
+# Bypasses YouTube's "Sign in to confirm you're not a bot" check on data-center IPs.
+# To enable: export cookies from your browser via "Get cookies.txt LOCALLY"
+# extension and place at the host path /root/wechat-x-youtube-data/cookies/
+# (mounted into the container at /data/cookies/).
+COOKIES_FILE = "/data/cookies/youtube_cookies.txt"
+
 
 @dataclass
 class DownloadResult:
@@ -95,8 +102,17 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
         "--print", "after_move:filepath",
         "--print", "after_move:%(title)s",
         "--print", "after_move:%(duration_string)s",
-        url,
     ]
+
+    # Add browser cookies if the user mounted a cookies file.
+    # YouTube on data-center IPs (Hetzner, AWS) requires logged-in cookies.
+    if os.path.exists(COOKIES_FILE):
+        cmd.extend(["--cookies", COOKIES_FILE])
+        logger.debug(f"[downloader] Using cookies file: {COOKIES_FILE}")
+    else:
+        logger.debug(f"[downloader] No cookies file at {COOKIES_FILE} — proceeding without auth")
+
+    cmd.append(url)
 
     logger.info(f"[downloader] yt-dlp start: {url} (audio_only={audio_only})")
 
