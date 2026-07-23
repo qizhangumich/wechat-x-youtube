@@ -7,3 +7,6 @@ pycryptodome==3.19.0
 # Phase 3 — media downloader. Unpinned because yt-dlp needs frequent updates
 # to keep up with platform changes; rebuild grabs latest at image build time.
 yt-dlp
+# Phase 4 — YouTube transcript fetching (routed through residential proxy;
+# YouTube blocks transcript requests from data-center IPs)
+youtube-transcript-api

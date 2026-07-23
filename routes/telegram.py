@@ -29,6 +29,7 @@ from models.schemas import ProcessResult
 from services.downloader import download_url
 from services.message_service import process_message
 from services.notion_client import NotionClient, get_notion_client
+from services.youtube_analysis import analyze_youtube_video
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -197,6 +198,19 @@ def _download_in_background(url: str, page_id: Optional[str], audio_only: bool) 
         logger.error(f"[telegram /dl] Notion update failed for {page_id}: {exc}")
 
 
+def _schedule_youtube_analysis(background_tasks: BackgroundTasks, result: ProcessResult) -> None:
+    """
+    Phase 4: for every YouTube link in a processed message, schedule the
+    transcript → Claude → youtube-analysis-DB pipeline as a background task.
+    Duplicates are fine — the pipeline dedupes against the analysis DB itself,
+    so re-shared videos don't re-analyze.
+    """
+    for r in result.results:
+        if r.source_type.value == "youtube":
+            background_tasks.add_task(analyze_youtube_video, r.url)
+            logger.info(f"[telegram] YouTube analysis scheduled for {r.url}")
+
+
 @router.post("")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """
@@ -267,6 +281,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         # Schedule the actual download — runs after this response goes out
         background_tasks.add_task(_download_in_background, url, page_id, audio_only)
 
+        # Phase 4: YouTube links also get transcript analysis
+        _schedule_youtube_analysis(background_tasks, result)
+
         mode = "🎵 audio" if audio_only else "🎬 video (≤720p)"
         link_status = "🔁 already saved" if result.links_saved == 0 else "💾 saved"
         if chat_id:
@@ -280,6 +297,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
     # --- Default path: just save link(s) to Notion (no download) -------
     try:
         result = process_message(text, captured_from="Telegram")
+
+        # Phase 4: YouTube links get transcript analysis automatically
+        _schedule_youtube_analysis(background_tasks, result)
+
         if chat_id:
             await _send_telegram_reply(chat_id, _build_reply(result))
     except Exception as exc:

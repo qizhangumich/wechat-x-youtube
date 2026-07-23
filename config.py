@@ -114,6 +114,23 @@ class Settings:
     # Override only if you change the cobalt container name or port.
     COBALT_API_URL: str = os.getenv("COBALT_API_URL", "http://cobalt-api:9000/")
 
+    # ------------------------------------------------------------------
+    # Phase 4 — YouTube transcript analysis (Claude)
+    # ------------------------------------------------------------------
+
+    # Anthropic API key for transcript analysis. Get one at
+    # https://console.anthropic.com/ → API Keys. Starts with "sk-ant-".
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # The SEPARATE Notion database where YouTube transcripts + structured
+    # analysis are saved (not the link-collection DB). Invite the integration
+    # to this database too.
+    NOTION_YOUTUBE_DB_ID: str = os.getenv("NOTION_YOUTUBE_DB_ID", "")
+
+    # Master switch. Analysis also auto-disables (with a log line) when
+    # ANTHROPIC_API_KEY or NOTION_YOUTUBE_DB_ID is missing.
+    YOUTUBE_ANALYSIS_ENABLED: bool = os.getenv("YOUTUBE_ANALYSIS_ENABLED", "true").lower() == "true"
+
     # Residential proxy for downloader outbound traffic.
     # Set only if YouTube blocks your server's IP — your home/laptop IP works
     # fine without a proxy.
