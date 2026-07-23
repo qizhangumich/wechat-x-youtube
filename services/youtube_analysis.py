@@ -91,6 +91,57 @@ def _already_analyzed(url: str) -> bool:
         return False
 
 
+def _argument_blocks(analysis: AnalysisResult) -> List[dict]:
+    """
+    Render the argument-mining result as Notion blocks:
+
+        ## Arguments & Logic
+        ### <claim>
+        • <evidence item>            (bulleted list)
+        Logic: <reasoning>           (italic paragraph)
+    """
+    if not analysis.arguments:
+        return []
+
+    blocks: List[dict] = [
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"text": {"content": "Arguments & Logic"}}]},
+        }
+    ]
+    for arg in analysis.arguments:
+        claim = str(arg.get("claim", "")).strip()
+        if not claim:
+            continue
+        blocks.append({
+            "object": "block",
+            "type": "heading_3",
+            "heading_3": {"rich_text": [{"text": {"content": claim[:RICH_TEXT_LIMIT]}}]},
+        })
+        for ev in arg.get("evidence", []) or []:
+            ev = str(ev).strip()
+            if ev:
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"text": {"content": ev[:RICH_TEXT_LIMIT]}}]},
+                })
+        reasoning = str(arg.get("reasoning", "")).strip()
+        if reasoning:
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{
+                        "text": {"content": f"Logic: {reasoning}"[:RICH_TEXT_LIMIT]},
+                        "annotations": {"italic": True},
+                    }]
+                },
+            })
+    return blocks
+
+
 def _transcript_blocks(transcript_text: str) -> List[dict]:
     """Chunk the transcript into Notion paragraph blocks (≤2000 chars each)."""
     blocks: List[dict] = [
@@ -143,7 +194,11 @@ def _save_analysis_to_notion(
     """
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
-    key_points_text = "\n".join(f"• {p}" for p in analysis.key_points)
+    # Key Points property = compact list of the claims (full detail with
+    # evidence + reasoning lives in the page body's Arguments & Logic section)
+    key_points_text = "\n".join(
+        f"• {a.get('claim', '')}" for a in analysis.arguments if a.get("claim")
+    )
     people_text = ", ".join(analysis.people)
     title = analysis.title[:200] or "Untitled video"
     if transcript.channel and transcript.channel not in title:
@@ -162,7 +217,7 @@ def _save_analysis_to_notion(
         PROP_ANALYZED_AT: {"date": {"start": now_iso}},
     }
 
-    all_blocks = _transcript_blocks(transcript.text)
+    all_blocks = _argument_blocks(analysis) + _transcript_blocks(transcript.text)
     first_batch = all_blocks[:BLOCKS_PER_REQUEST]
     remaining = all_blocks[BLOCKS_PER_REQUEST:]
 

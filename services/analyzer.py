@@ -36,12 +36,15 @@ REQUEST_TIMEOUT_SECONDS = 300
 
 SYSTEM_PROMPT = (
     "You are an analyst building a personal knowledge base from YouTube video "
-    "transcripts. Given a transcript, produce a faithful, information-dense "
-    "analysis. Extract only what is actually said or clearly implied — never "
-    "invent companies, people, or facts that are not in the transcript. Write "
-    "the summary and key points in the same language as the transcript "
-    "(Chinese transcript → Chinese summary, English → English). Keep entity "
-    "names (companies, technologies, people) in their original form."
+    "transcripts. Your job is ARGUMENT MINING, not summarizing: identify each "
+    "substantive opinion or claim the speaker(s) advance, the evidence they "
+    "actually cite for it (data, examples, anecdotes, references, personal "
+    "experience), and the reasoning that connects the evidence to the claim. "
+    "If a claim is asserted with weak or no evidence, say so explicitly in the "
+    "reasoning field — do not invent support. Extract only what is actually "
+    "said or clearly implied; never invent companies, people, or facts. Write "
+    "in the same language as the transcript (Chinese transcript → Chinese "
+    "analysis, English → English). Keep entity names in their original form."
 )
 
 ANALYSIS_SCHEMA = {
@@ -53,12 +56,31 @@ ANALYSIS_SCHEMA = {
         },
         "summary": {
             "type": "string",
-            "description": "A 2-4 sentence TL;DR of what the video covers and its main takeaway",
+            "description": "The core thesis: what the speaker(s) are fundamentally arguing, in 1-3 sentences",
         },
-        "key_points": {
+        "arguments": {
             "type": "array",
-            "items": {"type": "string"},
-            "description": "3-10 bullet points capturing the key content structure and arguments, in order",
+            "description": "Every substantive opinion/claim advanced in the video, in order of appearance",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "type": "string",
+                        "description": "The opinion or claim, stated concisely, attributed if multiple speakers (e.g. 'Guest: ...')",
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The specific evidence cited for this claim — data, examples, anecdotes, references. Empty array if none given",
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "The logic connecting the evidence to the claim — why the speaker believes the evidence supports it. If evidence is weak or absent, note that here",
+                    },
+                },
+                "required": ["claim", "evidence", "reasoning"],
+                "additionalProperties": False,
+            },
         },
         "companies": {
             "type": "array",
@@ -81,7 +103,7 @@ ANALYSIS_SCHEMA = {
             "description": "3-8 thematic tags for categorization, e.g. 'AI agents', 'venture capital', 'prompt engineering'",
         },
     },
-    "required": ["title", "summary", "key_points", "companies", "technologies", "people", "topics"],
+    "required": ["title", "summary", "arguments", "companies", "technologies", "people", "topics"],
     "additionalProperties": False,
 }
 
@@ -90,8 +112,8 @@ ANALYSIS_SCHEMA = {
 class AnalysisResult:
     success: bool
     title: str = ""
-    summary: str = ""
-    key_points: List[str] = field(default_factory=list)
+    summary: str = ""            # core thesis
+    arguments: List[dict] = field(default_factory=list)  # {claim, evidence: [...], reasoning}
     companies: List[str] = field(default_factory=list)
     technologies: List[str] = field(default_factory=list)
     people: List[str] = field(default_factory=list)
@@ -127,7 +149,8 @@ def analyze_transcript(transcript_text: str, video_title: Optional[str] = None,
 
     payload = {
         "model": settings.OPENAI_MODEL,
-        "max_tokens": 4096,
+        # Argument mining produces more output than a plain summary
+        "max_tokens": 8192,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -196,7 +219,7 @@ def analyze_transcript(transcript_text: str, video_title: Optional[str] = None,
         # Real title from oEmbed wins; the model's inferred title is the fallback
         title=video_title or parsed.get("title", "") or "Untitled",
         summary=parsed.get("summary", ""),
-        key_points=parsed.get("key_points", []),
+        arguments=parsed.get("arguments", []),
         companies=parsed.get("companies", []),
         technologies=parsed.get("technologies", []),
         people=parsed.get("people", []),
