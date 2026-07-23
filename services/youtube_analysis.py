@@ -207,8 +207,8 @@ def analyze_youtube_video(url: str) -> None:
     """
     if not settings.YOUTUBE_ANALYSIS_ENABLED:
         return
-    if not settings.ANTHROPIC_API_KEY or not settings.NOTION_YOUTUBE_DB_ID:
-        logger.info("[yt-analysis] Skipped — ANTHROPIC_API_KEY / NOTION_YOUTUBE_DB_ID not configured")
+    if not settings.OPENAI_API_KEY or not settings.NOTION_YOUTUBE_DB_ID:
+        logger.info("[yt-analysis] Skipped — OPENAI_API_KEY / NOTION_YOUTUBE_DB_ID not configured")
         return
 
     if _already_analyzed(url):

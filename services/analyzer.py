@@ -1,19 +1,17 @@
 """
-Transcript analyzer — Phase 4. Calls the Claude Messages API.
+Transcript analyzer — Phase 4. Calls the OpenAI Chat Completions API.
 
-Why raw HTTP (requests) instead of the official `anthropic` SDK:
+Why raw HTTP (requests) instead of the `openai` SDK:
   This project pins pydantic 1.8.2 (required by fastapi 0.68 for the SCF
-  deployment) and the anthropic SDK requires pydantic 2.x. Rather than fight
-  the dependency wall, we call POST /v1/messages directly — the request is a
-  simple JSON POST and structured outputs give us schema-validated JSON back.
+  deployment) and current openai SDKs require pydantic 2.x. The API is a
+  simple JSON POST, so we call it directly.
 
-Model: claude-opus-4-8 with adaptive thinking. Structured outputs
-(output_config.format json_schema) guarantee the response parses — no
-brittle "find the JSON in the text" logic.
+Structured output: response_format json_schema with strict=true makes the
+model return schema-valid JSON — no brittle "find the JSON in the text"
+parsing. Requires every property in `required` and additionalProperties=false.
 
-Cost note: a typical 20-minute video transcript (~8K tokens in, ~1K out)
-costs roughly $0.05-0.07 per analysis at Opus pricing. Not worth optimizing
-at personal scale.
+Model: settings.OPENAI_MODEL (default gpt-4o-mini, ~$0.002 per typical
+20-minute video transcript).
 """
 
 import json
@@ -27,16 +25,14 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
-MODEL = "claude-opus-4-8"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
-# Cap what we send: ~150K chars ≈ 40-50K tokens ≈ $0.25 per analysis worst
-# case. Covers 2-3 hour videos; longer transcripts get truncated with a note.
+# Cap what we send: ~150K chars ≈ 40K tokens. gpt-4o-mini's 128K-token context
+# handles this fine; covers 2-3 hour videos. Longer transcripts get truncated
+# with a note so the model knows the tail is missing.
 MAX_TRANSCRIPT_CHARS = 150_000
 
-# Claude may take a while on long transcripts (adaptive thinking + large input).
-REQUEST_TIMEOUT_SECONDS = 600
+REQUEST_TIMEOUT_SECONDS = 300
 
 SYSTEM_PROMPT = (
     "You are an analyst building a personal knowledge base from YouTube video "
@@ -53,7 +49,7 @@ ANALYSIS_SCHEMA = {
     "properties": {
         "title": {
             "type": "string",
-            "description": "The video's title if stated, otherwise a concise descriptive title you infer from the content",
+            "description": "The video's title if stated, otherwise a concise descriptive title inferred from the content",
         },
         "summary": {
             "type": "string",
@@ -106,15 +102,15 @@ class AnalysisResult:
 def analyze_transcript(transcript_text: str, video_title: Optional[str] = None,
                        channel: Optional[str] = None) -> AnalysisResult:
     """
-    Run the Claude analysis over a transcript. Never raises.
+    Run the OpenAI analysis over a transcript. Never raises.
 
     Args:
         transcript_text: Full plain-text transcript.
         video_title: Real title from oEmbed, if known — passed as context.
         channel: Channel name from oEmbed, if known.
     """
-    if not settings.ANTHROPIC_API_KEY:
-        return AnalysisResult(success=False, error="ANTHROPIC_API_KEY not set")
+    if not settings.OPENAI_API_KEY:
+        return AnalysisResult(success=False, error="OPENAI_API_KEY not set")
 
     truncated = transcript_text[:MAX_TRANSCRIPT_CHARS]
     truncation_note = ""
@@ -130,58 +126,60 @@ def analyze_transcript(transcript_text: str, video_title: Optional[str] = None,
     context = ("\n".join(context_lines) + "\n\n") if context_lines else ""
 
     payload = {
-        "model": MODEL,
-        "max_tokens": 8192,
-        "system": SYSTEM_PROMPT,
-        "thinking": {"type": "adaptive"},
-        # Routine extraction — medium effort balances quality and token spend
-        "output_config": {
-            "effort": "medium",
-            "format": {"type": "json_schema", "schema": ANALYSIS_SCHEMA},
-        },
+        "model": settings.OPENAI_MODEL,
+        "max_tokens": 4096,
         "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": f"{context}Analyze this video transcript:\n\n{truncated}{truncation_note}",
-            }
+            },
         ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "video_analysis",
+                "strict": True,
+                "schema": ANALYSIS_SCHEMA,
+            },
+        },
     }
 
-    logger.info(f"[analyzer] Sending {len(truncated)} chars to {MODEL}...")
+    logger.info(f"[analyzer] Sending {len(truncated)} chars to {settings.OPENAI_MODEL}...")
     try:
         resp = requests.post(
-            ANTHROPIC_API_URL,
+            OPENAI_API_URL,
             headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "content-type": "application/json",
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
             },
             json=payload,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
-        return AnalysisResult(success=False, error=f"Anthropic API unreachable: {exc}")
+        return AnalysisResult(success=False, error=f"OpenAI API unreachable: {exc}")
 
     if not resp.ok:
-        # Log the body — Anthropic error messages are precise about what's wrong
-        logger.error(f"[analyzer] Anthropic API {resp.status_code}: {resp.text[:600]}")
-        return AnalysisResult(success=False, error=f"Anthropic API {resp.status_code}: {resp.text[:300]}")
+        # Log the body — OpenAI error messages name the exact problem
+        logger.error(f"[analyzer] OpenAI API {resp.status_code}: {resp.text[:600]}")
+        return AnalysisResult(success=False, error=f"OpenAI API {resp.status_code}: {resp.text[:300]}")
 
     data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message", {})
 
-    stop_reason = data.get("stop_reason")
-    if stop_reason == "refusal":
-        return AnalysisResult(success=False, error="Model declined to analyze this content (refusal)")
-    if stop_reason == "max_tokens":
+    if message.get("refusal"):
+        return AnalysisResult(success=False, error=f"Model refused: {message['refusal'][:200]}")
+
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
         logger.warning("[analyzer] Hit max_tokens — output may be truncated/unparseable")
+    elif finish_reason == "content_filter":
+        return AnalysisResult(success=False, error="Blocked by OpenAI content filter")
 
-    # With output_config.format, the first text block contains valid JSON
-    text = next(
-        (b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"),
-        "",
-    )
+    text = message.get("content") or ""
     if not text:
-        return AnalysisResult(success=False, error=f"No text in response (stop_reason={stop_reason})")
+        return AnalysisResult(success=False, error=f"Empty response (finish_reason={finish_reason})")
 
     try:
         parsed = json.loads(text)
@@ -190,12 +188,12 @@ def analyze_transcript(transcript_text: str, video_title: Optional[str] = None,
 
     usage = data.get("usage", {})
     logger.info(
-        f"[analyzer] Done — in={usage.get('input_tokens')} out={usage.get('output_tokens')} tokens"
+        f"[analyzer] Done — in={usage.get('prompt_tokens')} out={usage.get('completion_tokens')} tokens"
     )
 
     return AnalysisResult(
         success=True,
-        # Real title from oEmbed wins; Claude's inferred title is the fallback
+        # Real title from oEmbed wins; the model's inferred title is the fallback
         title=video_title or parsed.get("title", "") or "Untitled",
         summary=parsed.get("summary", ""),
         key_points=parsed.get("key_points", []),

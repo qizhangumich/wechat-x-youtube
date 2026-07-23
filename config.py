@@ -115,12 +115,17 @@ class Settings:
     COBALT_API_URL: str = os.getenv("COBALT_API_URL", "http://cobalt-api:9000/")
 
     # ------------------------------------------------------------------
-    # Phase 4 — YouTube transcript analysis (Claude)
+    # Phase 4 — YouTube transcript analysis (OpenAI)
     # ------------------------------------------------------------------
 
-    # Anthropic API key for transcript analysis. Get one at
-    # https://console.anthropic.com/ → API Keys. Starts with "sk-ant-".
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # OpenAI API key for transcript analysis.
+    # Get one at https://platform.openai.com/api-keys — starts with "sk-".
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+    # Which OpenAI model analyzes transcripts. gpt-4o-mini is cheap
+    # (~$0.002/video) and good at structured extraction; override via env
+    # if you prefer a stronger model.
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     # The SEPARATE Notion database where YouTube transcripts + structured
     # analysis are saved (not the link-collection DB). Invite the integration
