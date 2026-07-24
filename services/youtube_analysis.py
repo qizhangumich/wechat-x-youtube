@@ -255,10 +255,29 @@ def _save_analysis_to_notion(
     return page_id
 
 
-def analyze_youtube_video(url: str) -> None:
+def _notify_telegram(chat_id: Optional[int], text: str) -> None:
+    """Best-effort Telegram notification (used for failure visibility)."""
+    if not chat_id or not settings.TELEGRAM_BOT_TOKEN:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.warning(f"[yt-analysis] Telegram notify failed: {exc}")
+
+
+def analyze_youtube_video(url: str, chat_id: Optional[int] = None) -> None:
     """
     Full Phase 4 pipeline for one YouTube URL. Designed to run as a FastAPI
     background task — logs everything, raises nothing.
+
+    Args:
+        url: The YouTube URL to analyze.
+        chat_id: Telegram chat to notify on FAILURE (success is visible in
+            Notion; failures would otherwise be silent server-log entries).
     """
     if not settings.YOUTUBE_ANALYSIS_ENABLED:
         return
@@ -275,6 +294,7 @@ def analyze_youtube_video(url: str) -> None:
     transcript = fetch_transcript(url)
     if not transcript.success:
         logger.error(f"[yt-analysis] Transcript fetch failed for {url}: {transcript.error}")
+        _notify_telegram(chat_id, f"⚠️ Transcript unavailable, analysis skipped:\n{url}\n({transcript.error})")
         return
 
     analysis = analyze_transcript(
@@ -283,9 +303,12 @@ def analyze_youtube_video(url: str) -> None:
         channel=transcript.channel,
     )
     if not analysis.success:
-        logger.error(f"[yt-analysis] Claude analysis failed for {url}: {analysis.error}")
+        logger.error(f"[yt-analysis] LLM analysis failed for {url}: {analysis.error}")
+        _notify_telegram(chat_id, f"⚠️ Analysis failed:\n{url}\n({analysis.error})")
         return
 
     page_id = _save_analysis_to_notion(url, transcript, analysis)
     if page_id:
         logger.info(f"[yt-analysis] Saved analysis for {url} (page_id={page_id})")
+    else:
+        _notify_telegram(chat_id, f"⚠️ Analysis done but Notion save failed:\n{url}\n(see server logs)")

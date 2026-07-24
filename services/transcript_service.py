@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 # prefers manually-created transcripts over auto-generated ones per language.
 PREFERRED_LANGUAGES = ["en", "zh-Hans", "zh-Hant", "zh", "zh-CN", "zh-TW"]
 
-MAX_FETCH_ATTEMPTS = 3
+MAX_FETCH_ATTEMPTS = 5
 
 _VIDEO_ID_PATTERNS = [
     r"(?:youtube\.com/watch\?(?:.*&)?v=)([A-Za-z0-9_-]{11})",
@@ -159,12 +159,12 @@ def fetch_transcript(url: str) -> TranscriptResult:
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             exc_name = type(exc).__name__
-            # Block-type errors are worth retrying — the rotating proxy pool
-            # hands out a different exit IP each attempt. Definitive "this
-            # video has no transcript" errors are not.
-            if exc_name in ("TranscriptsDisabled", "NoTranscriptFound", "VideoUnavailable"):
-                logger.info(f"[transcript] {video_id}: {exc_name} — not retrying")
-                break
+            # Retry EVERYTHING, including TranscriptsDisabled / NoTranscriptFound.
+            # Known youtube-transcript-api quirk: when YouTube blocks a request,
+            # it can serve a page the library misreads as "transcripts disabled",
+            # so those errors are NOT reliable on a single attempt. The rotating
+            # proxy pool hands out a fresh exit IP each try; genuinely disabled
+            # videos just cost a few extra cheap requests before failing for real.
             logger.warning(f"[transcript] {video_id} attempt {attempt}/{MAX_FETCH_ATTEMPTS} failed: {exc_name}")
 
     return TranscriptResult(success=False, video_id=video_id, error=last_error[:500])

@@ -198,16 +198,21 @@ def _download_in_background(url: str, page_id: Optional[str], audio_only: bool) 
         logger.error(f"[telegram /dl] Notion update failed for {page_id}: {exc}")
 
 
-def _schedule_youtube_analysis(background_tasks: BackgroundTasks, result: ProcessResult) -> None:
+def _schedule_youtube_analysis(
+    background_tasks: BackgroundTasks,
+    result: ProcessResult,
+    chat_id: Optional[int] = None,
+) -> None:
     """
     Phase 4: for every YouTube link in a processed message, schedule the
-    transcript → Claude → youtube-analysis-DB pipeline as a background task.
+    transcript → LLM → youtube-analysis-DB pipeline as a background task.
     Duplicates are fine — the pipeline dedupes against the analysis DB itself,
-    so re-shared videos don't re-analyze.
+    so re-shared videos don't re-analyze. chat_id is used to notify the sender
+    on failure (success shows up in Notion by itself).
     """
     for r in result.results:
         if r.source_type.value == "youtube":
-            background_tasks.add_task(analyze_youtube_video, r.url)
+            background_tasks.add_task(analyze_youtube_video, r.url, chat_id)
             logger.info(f"[telegram] YouTube analysis scheduled for {r.url}")
 
 
@@ -282,7 +287,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         background_tasks.add_task(_download_in_background, url, page_id, audio_only)
 
         # Phase 4: YouTube links also get transcript analysis
-        _schedule_youtube_analysis(background_tasks, result)
+        _schedule_youtube_analysis(background_tasks, result, chat_id)
 
         mode = "🎵 audio" if audio_only else "🎬 video (≤720p)"
         link_status = "🔁 already saved" if result.links_saved == 0 else "💾 saved"
@@ -299,7 +304,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         result = process_message(text, captured_from="Telegram")
 
         # Phase 4: YouTube links get transcript analysis automatically
-        _schedule_youtube_analysis(background_tasks, result)
+        _schedule_youtube_analysis(background_tasks, result, chat_id)
 
         if chat_id:
             await _send_telegram_reply(chat_id, _build_reply(result))
