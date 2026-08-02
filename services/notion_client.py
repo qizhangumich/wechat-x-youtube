@@ -18,7 +18,7 @@ from typing import Optional
 import requests
 
 from config import settings
-from models.schemas import ExtractedLink, LinkSaveResult, SourceType
+from models.schemas import ExtractedLink, LinkSaveResult
 from services.link_parser import normalize_url
 from utils.logger import get_logger
 
@@ -35,13 +35,11 @@ NOTION_VERSION = "2022-06-28"
 PROP_TITLE         = "Title"
 PROP_ORIGINAL_URL  = "Original URL"
 PROP_SOURCE_TYPE   = "Source Type"
-PROP_PLATFORM      = "Platform"
 PROP_CAPTURED_FROM = "Captured From"
 PROP_RAW_MESSAGE   = "Raw Message"
 PROP_STATUS        = "Status"
 PROP_CREATED_AT    = "Created At"
 PROP_DEDUP_KEY     = "Dedup Key"
-PROP_NOTES         = "Notes"
 
 # --- Phase 3 — download properties (created manually in Notion UI) -----------
 PROP_DOWNLOAD_STATUS = "Download Status"  # Select: Requested | Downloading | Done | Failed
@@ -50,15 +48,6 @@ PROP_FILE_SIZE_MB    = "File Size MB"      # Number
 PROP_DURATION        = "Duration"          # Text — e.g. "12:34"
 PROP_DOWNLOADED_AT   = "Downloaded At"     # Date
 PROP_DOWNLOAD_ERROR  = "Download Error"    # Text
-
-# Human-readable platform labels
-PLATFORM_LABELS = {
-    SourceType.YOUTUBE:                 "YouTube",
-    SourceType.TWITTER:                 "Twitter / X",
-    SourceType.WECHAT_OFFICIAL_ACCOUNT: "WeChat Official Account",
-    SourceType.WECHAT_CHANNEL:          "WeChat Channels",
-    SourceType.OTHER:                   "Other",
-}
 
 # Notion rich_text max length
 NOTION_TEXT_LIMIT = 2000
@@ -245,7 +234,6 @@ class NotionClient:
     ) -> dict:
         """Construct the full Notion page creation payload."""
         dedup_key = self.build_dedup_key(link.url)
-        platform_label = PLATFORM_LABELS.get(link.source_type, "Other")
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
         return {
@@ -261,9 +249,6 @@ class NotionClient:
                     # "select" — value must match an existing option or Notion
                     # will create a new option automatically.
                     "select": {"name": link.source_type.value},
-                },
-                PROP_PLATFORM: {
-                    "rich_text": _rich_text(platform_label),
                 },
                 PROP_CAPTURED_FROM: {
                     # Which ingress channel saved this link — set per-route by
@@ -281,9 +266,6 @@ class NotionClient:
                 },
                 PROP_DEDUP_KEY: {
                     "rich_text": _rich_text(dedup_key),
-                },
-                PROP_NOTES: {
-                    "rich_text": [],  # empty for now; Step 3 will fill this
                 },
             },
         }

@@ -1,13 +1,37 @@
-# WeCom → Notion Link Collector
+# wechat-x-youtube — Link Collector + YouTube Analyzer
 
-Automatically receives messages forwarded to WeCom (Enterprise WeChat),
-extracts URLs, identifies their source platform, and saves them to a
-Notion database as a content inbox.
+Receives links forwarded via **Telegram** (or WeCom / iOS Shortcut), identifies
+their source platform, and saves them to a Notion database. YouTube links
+additionally get their **full transcript fetched and analyzed by an LLM**, with
+results saved to a second Notion database.
 
-**Current scope: Step 1 — capture only.**
-Link unlocking, content extraction, and LLM summarisation are not yet implemented.
+Deployed on Hetzner (`157.180.115.88`, Docker container `wechat-x-youtube`).
 
 ---
+
+## How it works
+
+```
+Telegram bot  ──┐
+WeCom callback ─┼─→ extract URLs → identify platform → save to wechat-x-y-db
+iOS Shortcut ───┘                                        (dedup by URL hash)
+                                                              │
+                                              YouTube links only
+                                                              ▼
+                                    fetch transcript (residential proxy)
+                                                              ▼
+                                    OpenAI gpt-4o-mini: summary + arguments
+                                                              ▼
+                                    yt-topics DB: one page per video
+                                    (full transcript in the page BODY,
+                                     under the "Transcript" heading)
+```
+
+- Failures (no transcript, LLM error, Notion error) are reported back to you
+  on Telegram. Success is silent — the page just appears in Notion.
+- Re-sharing a video does **not** re-analyze it (dedup on `Video URL`).
+- `/dl <url>` (or `/dla` for audio-only) also downloads the media via
+  yt-dlp/Cobalt onto the server and records the file path in Notion.
 
 ## Project Structure
 
@@ -15,226 +39,118 @@ Link unlocking, content extraction, and LLM summarisation are not yet implemente
 wechat_collection/
 ├── main.py                      # FastAPI app + startup
 ├── config.py                    # All env-var configuration
-├── models/
-│   └── schemas.py               # Pydantic models shared across the app
+├── models/schemas.py            # Pydantic models
 ├── routes/
-│   └── wecom.py                 # WeCom callback + test endpoints
+│   ├── telegram.py              # Telegram bot webhook (main entry point)
+│   ├── wecom.py                 # WeCom callback + test endpoints
+│   └── collect.py               # iOS Shortcut endpoint
 ├── services/
 │   ├── link_parser.py           # URL extraction & platform identification
-│   ├── notion_client.py         # Notion API writes + dedup
-│   └── message_service.py      # Pipeline orchestration
-├── utils/
-│   └── logger.py                # Centralised logging
-├── requirements.txt
-├── .env.example
-└── README.md
+│   ├── notion_client.py         # Main-DB writes + dedup
+│   ├── message_service.py       # Pipeline orchestration
+│   ├── transcript_service.py    # YouTube transcript fetch (proxied)
+│   ├── analyzer.py              # OpenAI argument-mining analysis
+│   ├── youtube_analysis.py      # Phase 4 orchestration + yt-topics writes
+│   ├── downloader.py            # yt-dlp downloads (/dl command)
+│   ├── cobalt_client.py         # Cobalt fallback for YouTube downloads
+│   └── poller.py                # Polls Notion for Download Status=Requested
+└── utils/
 ```
 
----
+## Notion databases
 
-## Prerequisites
+### `wechat-x-y-db` — link inbox (every link, all platforms)
 
-- Python 3.10 or 3.11
-- A Notion account with an integration token
-- (Optional for full WeCom integration) A WeCom developer account
+| Property        | Type   | Written by                          |
+|-----------------|--------|-------------------------------------|
+| Title           | Title  | save pipeline (the URL)             |
+| Original URL    | URL    | save pipeline                       |
+| Source Type     | Select | youtube / twitter / wechat_channel / wechat_official_account / other |
+| Captured From   | Select | Telegram / WeCom                    |
+| Raw Message     | Text   | save pipeline                       |
+| Status          | Select | Inbox (default) / Reviewed / Archived (manual) |
+| Created At      | Date   | save pipeline                       |
+| Dedup Key       | Text   | MD5 of normalized URL               |
+| Download Status | Select | /dl command & poller                |
+| Local File      | Text   | downloader                          |
+| File Size MB    | Number | downloader                          |
+| Duration        | Text   | downloader                          |
+| Downloaded At   | Date   | downloader                          |
+| Download Error  | Text   | downloader                          |
 
----
+Views: default table (all rows), **▶ YouTube queue** (youtube only — by design),
+**🧠 Analyzed library**, **𝕏 Twitter**, **💬 WeChat**.
 
-## Quick Start
+### `yt-topics` — one page per analyzed YouTube video
 
-### 1. Clone / download the project
+| Property     | Type         | Written by                       |
+|--------------|--------------|----------------------------------|
+| Title        | Title        | video title — channel            |
+| Video URL    | URL          | dedup key for the analysis pipeline — do not delete |
+| Summary      | Text         | analyzer                         |
+| Key Points   | Text         | analyzer (claims list)           |
+| Companies    | Multi-select | analyzer                         |
+| Technologies | Multi-select | analyzer                         |
+| People       | Text         | analyzer                         |
+| Topics       | Multi-select | analyzer                         |
+| Duration     | Text         | transcript length                |
+| Analyzed At  | Date         | pipeline                         |
+| My Notes     | Text         | **you** — never overwritten      |
+
+Page **body**: "Arguments & Logic" (claim → evidence → reasoning per argument)
+followed by the **full transcript**.
+
+## Configuration
+
+See [.env.example](.env.example) and [config.py](config.py). Key variables:
+
+| Variable               | Purpose                                        |
+|------------------------|------------------------------------------------|
+| `NOTION_API_KEY`       | Notion integration token                       |
+| `NOTION_DATABASE_ID`   | wechat-x-y-db ID                               |
+| `NOTION_YOUTUBE_DB_ID` | yt-topics DB ID                                |
+| `TELEGRAM_BOT_TOKEN`   | from @BotFather                                |
+| `TELEGRAM_ALLOWED_USERS` | comma-separated numeric user IDs             |
+| `OPENAI_API_KEY`       | transcript analysis (gpt-4o-mini, ~$0.002/video) |
+| `PROXY_URL`            | residential proxy — required on data-center IPs for transcripts |
+| `YOUTUBE_ANALYSIS_ENABLED` | master switch for Phase 4                  |
+
+## Local development
 
 ```bash
-cd D:\personal\ai_projects\56.wechat_collection
-```
-
-### 2. Create and activate a virtual environment
-
-```bash
-python -m venv .venv
-
-# Windows (PowerShell)
-.\.venv\Scripts\Activate.ps1
-
-# Windows (CMD)
-.\.venv\Scripts\activate.bat
-
-# macOS / Linux
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
+python -m venv .venv && .\.venv\Scripts\Activate.ps1   # Windows
 pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-```bash
-copy .env.example .env     # Windows
-# cp .env.example .env     # macOS / Linux
-```
-
-Open `.env` and fill in at least:
-
-| Variable             | Where to find it |
-|----------------------|------------------|
-| `NOTION_API_KEY`     | [notion.so/my-integrations](https://www.notion.so/my-integrations) → create an integration |
-| `NOTION_DATABASE_ID` | Open your Notion database → share the page with your integration → copy the ID from the URL |
-
-Leave the `WECOM_*` variables blank for now if you just want to test locally.
-
-### 5. Set up the Notion database
-
-Create a new Notion database (full page, not inline) with **exactly** these
-property names and types:
-
-| Property name   | Type      | Notes                        |
-|-----------------|-----------|------------------------------|
-| Title           | Title     | default name column          |
-| Original URL    | URL       |                              |
-| Source Type     | Select    | options auto-created on save |
-| Platform        | Text      |                              |
-| Captured From   | Select    |                              |
-| Raw Message     | Text      |                              |
-| Status          | Select    | default option: Inbox        |
-| Created At      | Date      |                              |
-| Dedup Key       | Text      |                              |
-| Notes           | Text      |                              |
-
-> **Important**: Share the database page with your Notion integration
-> (click Share → Invite → select your integration).
-
-### 6. Start the server
-
-```bash
+copy .env.example .env    # fill in values
 python main.py
 ```
 
-Or using uvicorn directly:
-
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-You should see:
-
-```
-Starting WeCom Collector (env=development)
-Configuration OK
-INFO:     Uvicorn running on http://0.0.0.0:8000
-```
-
----
-
-## Testing Locally (No WeCom Account Needed)
-
-### Health check
-
-```bash
-curl http://localhost:8000/health
-```
-
-Expected response:
-```json
-{"status": "ok", "env": "development", "notion_configured": true, "wecom_token_set": false}
-```
-
-### End-to-end test — POST a message with links
+Test without any messaging platform:
 
 ```bash
 curl -X POST http://localhost:8000/webhook/wecom/test \
   -H "Content-Type: application/json" \
-  -d "{\"text\": \"Worth saving: https://mp.weixin.qq.com/s/abc123 https://x.com/user/status/123 https://youtu.be/xxxx\"}"
+  -d "{\"text\": \"https://youtu.be/xxxx\"}"
 ```
 
-Expected response:
-```json
-{
-  "success": true,
-  "links_found": 3,
-  "links_saved": 3,
-  "links_skipped": 0,
-  "results": [
-    {"url": "https://mp.weixin.qq.com/s/abc123", "source_type": "wechat_official_account", "status": "saved", "notion_page_id": "..."},
-    {"url": "https://x.com/user/status/123",     "source_type": "twitter",                  "status": "saved", "notion_page_id": "..."},
-    {"url": "https://youtu.be/xxxx",              "source_type": "youtube",                  "status": "saved", "notion_page_id": "..."}
-  ],
-  "message": "Processed 3 link(s): 3 saved, 0 skipped."
-}
-```
+Interactive API docs: http://localhost:8000/docs
 
-### Test with no links
+## Deployment
 
 ```bash
-curl -X POST http://localhost:8000/webhook/wecom/test \
-  -H "Content-Type: application/json" \
-  -d "{\"text\": \"Just a regular message with no links\"}"
+ssh root@157.180.115.88
+cd /root/wechat-x-youtube && git pull
+docker build -t wechat-x-youtube . && docker rm -f wechat-x-youtube && \
+  # re-run with the same flags as before (see guide.md)
 ```
 
-Expected:
-```json
-{"success": true, "links_found": 0, "links_saved": 0, ...}
-```
+More detail: [guide.md](guide.md), [workflow.md](workflow.md), [lessons.md](lessons.md).
 
-### Test deduplication
+## History
 
-Run the same POST twice — the second time all results should show `"status": "duplicate"`.
-
-### Interactive API docs
-
-Open your browser at: [http://localhost:8000/docs](http://localhost:8000/docs)
-
----
-
-## WeCom Integration (Full Setup)
-
-Once you're ready to connect real WeCom:
-
-1. Go to **WeCom Admin Panel** → Applications → your app → **Receive Messages**
-2. Set callback URL to: `https://<your-public-domain>/webhook/wecom`
-3. Enter a Token (copy the same value to `WECOM_TOKEN` in `.env`)
-4. For MVP, use **Plain Text Mode** (no encryption) — simpler to verify
-5. Click "Save" — WeCom will send a GET request to verify the URL
-
-> For local development, use [ngrok](https://ngrok.com/) or
-> [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-> to expose your local server publicly:
-> ```bash
-> ngrok http 8000
-> ```
-> Then use the ngrok HTTPS URL as your WeCom callback URL.
-
----
-
-## Roadmap
-
-| Step | Feature                            | Status      |
-|------|------------------------------------|-------------|
-| 1    | Capture links from WeCom → Notion  | ✅ Complete  |
-| 2    | Link unlocking / public URL        | Planned     |
-| 2    | Web page content extraction        | Planned     |
-| 3    | LLM title + summary generation     | Planned     |
-| 3    | Auto-tagging                       | Planned     |
-
-Extension points are marked with comments in the source code.
-
----
-
-## Troubleshooting
-
-**`EnvironmentError: Missing required environment variables`**
-→ Check that `.env` exists and contains `NOTION_API_KEY` and `NOTION_DATABASE_ID`.
-
-**`HTTP 400` from Notion on save**
-→ Verify that all database property names match exactly (case-sensitive) and
-  that the integration has been shared with the database.
-
-**Links extracted but `status: error`**
-→ Check that your Notion integration has "Insert content" permission and that
-  the database is shared with it.
-
-**WeCom verification fails**
-→ Ensure `WECOM_TOKEN` in `.env` matches exactly what you entered in WeCom console.
-   For initial testing, set it to blank and use Plain Text Mode.
+| Phase | Feature                                        |
+|-------|------------------------------------------------|
+| 1     | Capture links from WeCom → Notion              |
+| 2     | Telegram bot as main ingress                   |
+| 3     | Media downloads (/dl, yt-dlp + Cobalt, poller) |
+| 4     | YouTube transcript fetch + LLM argument mining |
+| 2026-08 | Schema cleanup: dropped unused columns from an abandoned "queue/topic-map" design; per-platform views added |
