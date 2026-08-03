@@ -176,7 +176,20 @@ def download_via_cobalt(url: str, audio_only: bool = False) -> CobaltDownloadRes
             pass
         return CobaltDownloadResult(success=False, error=f"tunnel download failed: {exc}")
 
-    size_mb = round(output_path.stat().st_size / (1024 * 1024), 1)
+    # Cobalt sometimes reports a tunnel that streams 0 (or near-0) bytes —
+    # a silent extraction failure. Treat tiny files as errors so callers can
+    # fall back instead of feeding garbage to ffmpeg/Notion.
+    size_bytes = output_path.stat().st_size
+    if size_bytes < 10 * 1024:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        msg = f"cobalt tunnel returned only {size_bytes} bytes — treating as failure"
+        logger.error(f"[cobalt] {msg}")
+        return CobaltDownloadResult(success=False, error=msg)
+
+    size_mb = round(size_bytes / (1024 * 1024), 1)
     logger.info(f"[cobalt] Done: {output_path} ({size_mb} MB)")
 
     return CobaltDownloadResult(

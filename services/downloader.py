@@ -98,7 +98,7 @@ def _is_youtube_url(url: str) -> bool:
     )
 
 
-def download_url(url: str, audio_only: bool = False) -> DownloadResult:
+def download_url(url: str, audio_only: bool = False, force_ytdlp: bool = False) -> DownloadResult:
     """
     Download a single URL.
 
@@ -110,12 +110,15 @@ def download_url(url: str, audio_only: bool = False) -> DownloadResult:
         url: The media URL (YouTube, X, TikTok, Bilibili, etc.).
         audio_only: If True, extract audio-only mp3. Otherwise video capped
                     at settings.DOWNLOAD_MAX_HEIGHT.
+        force_ytdlp: Skip the cobalt routing even for YouTube. Used as a
+                    second attempt when cobalt fails (the proxy + tv/android
+                    player clients sometimes succeed where cobalt doesn't).
 
     Returns:
         DownloadResult — never raises; failures are reported via the .error field.
     """
     # ----- YouTube goes through cobalt ----------------------------------
-    if _is_youtube_url(url):
+    if _is_youtube_url(url) and not force_ytdlp:
         from services.cobalt_client import download_via_cobalt
         logger.info(f"[downloader] YouTube detected — routing to cobalt: {url}")
         cobalt = download_via_cobalt(url, audio_only=audio_only)

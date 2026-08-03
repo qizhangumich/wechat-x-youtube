@@ -148,6 +148,11 @@ def transcribe_url_audio(url: str) -> AudioTranscriptionResult:
     logger.info(f"[audio-transcribe] Downloading audio for {url}")
     dl = download_url(url, audio_only=True)
     if not dl.success or not dl.file_path:
+        # Second chance: cobalt occasionally fails on videos yt-dlp can still
+        # reach through the residential proxy + tv/android player clients.
+        logger.warning(f"[audio-transcribe] Primary download failed ({dl.error}) — retrying via yt-dlp direct")
+        dl = download_url(url, audio_only=True, force_ytdlp=True)
+    if not dl.success or not dl.file_path:
         return AudioTranscriptionResult(
             success=False, error=f"audio download failed: {dl.error}"
         )
