@@ -52,6 +52,11 @@ CHUNK_TIMEOUT_SECONDS = 600
 
 FFMPEG_TIMEOUT_SECONDS = 900
 
+# yt-dlp direct attempts after cobalt fails. Each attempt exits through a
+# fresh residential-proxy IP; YouTube's per-IP blocks (incl. fake DRM errors)
+# rarely survive 3 rotations.
+MAX_DOWNLOAD_ATTEMPTS = 3
+
 
 @dataclass
 class AudioTranscriptionResult:
@@ -149,10 +154,16 @@ def transcribe_url_audio(url: str) -> AudioTranscriptionResult:
 
     logger.info(f"[audio-transcribe] Downloading audio for {url}")
     dl = download_url(url, audio_only=True)
-    if not dl.success or not dl.file_path:
-        # Second chance: cobalt occasionally fails on videos yt-dlp can still
-        # reach through the residential proxy + tv/android player clients.
-        logger.warning(f"[audio-transcribe] Primary download failed ({dl.error}) — retrying via yt-dlp direct")
+    # Cobalt failed → retry via yt-dlp direct, MULTIPLE times. YouTube serves
+    # different (sometimes deceptive — fake "DRM protected") responses per
+    # proxy exit IP, and the rotating pool hands out a fresh IP each attempt.
+    attempt = 0
+    while (not dl.success or not dl.file_path) and attempt < MAX_DOWNLOAD_ATTEMPTS:
+        attempt += 1
+        logger.warning(
+            f"[audio-transcribe] Download failed ({str(dl.error)[:120]}) — "
+            f"yt-dlp direct attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}"
+        )
         dl = download_url(url, audio_only=True, force_ytdlp=True)
     if not dl.success or not dl.file_path:
         return AudioTranscriptionResult(
