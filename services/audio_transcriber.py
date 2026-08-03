@@ -40,10 +40,12 @@ logger = get_logger(__name__)
 
 OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
-# Chunk length in seconds. gpt-4o-(mini-)transcribe rejects long inputs and
-# the API caps uploads at 25 MB; 20-min chunks at 32 kbps are ~4.8 MB — safe
-# on both axes for every supported model (incl. whisper-1).
-CHUNK_SECONDS = 1200
+# Chunk length in seconds. The binding constraint is NOT the 25 MB upload
+# limit but gpt-4o-(mini-)transcribe's ~2,000-token OUTPUT cap per request:
+# dense Mandarin speech runs ~250 chars/min ≈ 200-330 tokens/min, so a 20-min
+# chunk silently truncates. 5-min chunks stay well under the cap in any
+# language; cost is per-minute so extra requests are free.
+CHUNK_SECONDS = 300
 
 # Per-chunk upload+transcription timeout.
 CHUNK_TIMEOUT_SECONDS = 600
