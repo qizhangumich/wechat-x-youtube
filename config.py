@@ -127,6 +127,12 @@ class Settings:
     # if you prefer a stronger model.
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+    # Audio-transcription fallback: when caption fetching fails (e.g. subtitles
+    # disabled), download the audio and transcribe it via OpenAI instead.
+    # gpt-4o-mini-transcribe ≈ $0.003/min ($0.18 per hour of video).
+    AUDIO_FALLBACK_ENABLED: bool = os.getenv("AUDIO_FALLBACK_ENABLED", "true").lower() == "true"
+    OPENAI_TRANSCRIBE_MODEL: str = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+
     # The SEPARATE Notion database where YouTube transcripts + structured
     # analysis are saved (not the link-collection DB). Invite the integration
     # to this database too.

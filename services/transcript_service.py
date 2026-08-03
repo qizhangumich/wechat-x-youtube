@@ -167,6 +167,35 @@ def fetch_transcript(url: str) -> TranscriptResult:
             # videos just cost a few extra cheap requests before failing for real.
             logger.warning(f"[transcript] {video_id} attempt {attempt}/{MAX_FETCH_ATTEMPTS} failed: {exc_name}")
 
+    # ---- Fallback: no captions available → transcribe the actual audio ----
+    # Covers genuinely disabled subtitles (TranscriptsDisabled after all
+    # retries) and IP blocks that outlast every proxy rotation.
+    if settings.AUDIO_FALLBACK_ENABLED and settings.OPENAI_API_KEY:
+        logger.warning(
+            f"[transcript] {video_id}: captions unavailable after "
+            f"{MAX_FETCH_ATTEMPTS} attempts ({last_error[:120]}) — "
+            f"falling back to audio transcription"
+        )
+        from services.audio_transcriber import transcribe_url_audio
+
+        audio = transcribe_url_audio(url)
+        if audio.success:
+            meta = _fetch_oembed_metadata(url)
+            logger.info(
+                f"[transcript] {video_id}: audio fallback OK — "
+                f"{len(audio.text)} chars, {audio.duration_seconds}s"
+            )
+            return TranscriptResult(
+                success=True,
+                video_id=video_id,
+                title=meta.get("title"),
+                channel=meta.get("channel"),
+                language=None,  # auto-detected by the transcription model
+                duration_seconds=audio.duration_seconds,
+                text=audio.text,
+            )
+        last_error = f"{last_error[:200]}; audio fallback: {audio.error}"
+
     return TranscriptResult(success=False, video_id=video_id, error=last_error[:500])
 
 
